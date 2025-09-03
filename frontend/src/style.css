@@ -1,1 +1,153 @@
-body { font-family: sans-serif; padding: 1rem; }
+/* Theme: Flat (default) */
+:root {
+  --bg: #f5f5f5;
+  --bg-accent: #f5f5f5;
+  --card: #ffffff;
+  --muted: #6b7280;
+  --text: #111827;
+  --accent: #16a34a;
+  --accent-600: #15803d;
+  --danger: #b91c1c;
+  --ring: rgba(22, 163, 74, 0.22);
+  --border: #e5e7eb;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 2rem;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial, 'Noto Sans';
+  background:
+    radial-gradient(800px 400px at -10% -20%, var(--bg-accent) 10%, transparent 60%),
+    radial-gradient(800px 400px at 110% -10%, var(--bg-accent) 10%, transparent 60%),
+    var(--bg);
+  color: var(--text);
+}
+
+.container {
+  max-width: 840px;
+  margin: 0 auto;
+}
+
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 1.1rem; box-shadow: none; }
+
+h1 {
+  font-size: 1.4rem;
+  margin: 0 0 0.75rem;
+  letter-spacing: 0.2px;
+  position: relative;
+}
+
+.muted { color: var(--muted); }
+
+.grid { display: grid; gap: 1rem; }
+
+.row { display: grid; gap: 0.5rem; }
+
+label { font-size: 0.9rem; color: var(--muted); }
+
+input {
+  width: 100%;
+  padding: 0.7rem 0.85rem;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text);
+  outline: none;
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px var(--ring);
+}
+
+.controls { display: flex; gap: 0.75rem; align-items: center; }
+
+.btn {
+  appearance: none;
+  border: none;
+  cursor: pointer;
+  padding: 0.65rem 1rem;
+  border-radius: 8px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  box-shadow: none;
+  transition: transform 0.05s ease, filter 0.2s ease;
+}
+.btn-outline {
+  background: transparent;
+  color: var(--accent-600);
+  border: 1px solid var(--border);
+}
+
+.btn:hover { filter: brightness(1.03); }
+.btn:active { transform: translateY(1px); }
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.pill {
+  display: inline-block;
+  padding: 0.28rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text);
+  font-size: 0.82rem;
+}
+
+.state { font-size: 0.9rem; }
+.state.error { color: var(--danger); }
+.state.ok { color: var(--accent-600); }
+
+.divider { height: 1px; background: var(--border); margin: 0.75rem 0; }
+
+.list { display: grid; gap: 0.5rem; }
+.list-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+}
+.list.two-col { grid-template-columns: 1fr; }
+.list.two-col .list-row { display: grid; grid-template-columns: 1fr 2fr; align-items: center; }
+.name { font-weight: 600; }
+.code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+
+/* Brand header */
+.brand { display: flex; align-items: center; gap: 0.75rem; }
+.brand .logo { width: 32px; height: 32px; object-fit: contain; border-radius: 6px; }
+
+/* Cells layout for relations */
+.cells {
+  display: flex;
+  /*grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));*/
+  gap: 0.75rem;
+  flex-direction: column;
+}
+.cell {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.8rem;
+  display: grid;
+  gap: 0.25rem;
+}
+.cell { cursor: pointer; transition: border-color 0.15s ease, box-shadow 0.15s ease; }
+.cell:hover { border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring); }
+.cell-title { font-weight: 700; color: var(--accent-600); }
+.cell-sub { color: var(--text); }
+
+.cell-details { margin-top: 0.4rem; padding-top: 0.5rem; border-top: 1px dashed var(--border); display: grid; gap: 0.25rem; }
+.kv { display: grid; grid-template-columns: 1fr 2fr; gap: 0.25rem 0.5rem; }
+.kv-label { color: var(--muted); font-size: 0.86rem; }
+.kv-value { color: var(--text); font-weight: 500; }

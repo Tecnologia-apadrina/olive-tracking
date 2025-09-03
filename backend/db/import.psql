@@ -1,0 +1,116 @@
+-- Importación masiva desde CSVs usando psql \copy
+-- Uso:
+--   psql "$DATABASE_URL" -v PARCELAS=/ruta/parcelas.csv -v PALOTS=/ruta/palots.csv -v OLIVOS=/ruta/olivos.csv -f backend/db/import.psql
+\set ON_ERROR_STOP on
+
+-- Staging tables (permiten adaptar columnas y reimportar)
+create table if not exists s_parcelas(
+  id int,
+  nombre text,
+  sigpac_municipio text,
+  sigpac_poligono text,
+  sigpac_parcela text,
+  sigpac_recinto text,
+  variedad text
+);
+create table if not exists s_palots(id int, codigo text);
+create table if not exists s_olivos(id int, id_parcela int, variedad text);
+
+truncate s_parcelas;
+truncate s_palots;
+truncate s_olivos;
+
+\echo Importando parcelas (staging) desde :'PARCELAS'
+-- Intento 1: CSV extendido -> id,nombre,sigpac_municipio,sigpac_poligono,sigpac_parcela,sigpac_recinto,variedad
+\set ON_ERROR_STOP off
+\copy s_parcelas(id, nombre, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, variedad) from :'PARCELAS' with (format csv, header true)
+\set ON_ERROR_STOP on
+-- Si no cargó filas (formato antiguo), probar con id,nombre,variedad
+-- Creamos un booleano compatible con \if (on/off)
+select case when count(*) = 0 then 'on' else 'off' end as oldfmt from s_parcelas; \gset
+\if :oldfmt
+  \echo CSV antiguo detectado: usando columnas id,nombre,variedad
+  \copy s_parcelas(id, nombre, variedad) from :'PARCELAS' with (format csv, header true)
+\endif
+
+\if :{?PALOTS}
+  \echo Importando palots (staging) desde :'PALOTS'
+  -- El CSV actual trae solo: codigo
+  \copy s_palots(codigo) from :'PALOTS' with (format csv, header true)
+\else
+  \echo Omitiendo importación de palots: variable PALOTS no definida
+\endif
+
+\if :{?OLIVOS}
+  \echo Importando olivos (staging) desde :'OLIVOS'
+  -- El CSV actual trae: id,id_parcela
+  \copy s_olivos(id, id_parcela) from :'OLIVOS' with (format csv, header true)
+\else
+  \echo Omitiendo importación de olivos: variable OLIVOS no definida
+\endif
+
+\echo Asegurando estructura de tabla parcelas
+-- Crea la tabla si no existe (incluye columnas SIGPAC y variedad)
+create table if not exists parcelas(
+  id serial primary key,
+  nombre text,
+  id_usuario integer,
+  sigpac_municipio text,
+  sigpac_poligono text,
+  sigpac_parcela text,
+  sigpac_recinto text,
+  variedad text
+);
+-- Si ya existía, garantizamos que están las columnas nuevas
+alter table if exists parcelas add column if not exists sigpac_municipio text;
+alter table if exists parcelas add column if not exists sigpac_poligono  text;
+alter table if exists parcelas add column if not exists sigpac_parcela   text;
+alter table if exists parcelas add column if not exists sigpac_recinto   text;
+alter table if exists parcelas add column if not exists variedad         text;
+
+\echo Volcando staging a tablas definitivas
+insert into parcelas(id, nombre, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, variedad)
+select id, nombre, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, variedad from s_parcelas
+on conflict (id) do update set
+  nombre = coalesce(nullif(excluded.nombre, ''), parcelas.nombre),
+  sigpac_municipio = coalesce(nullif(excluded.sigpac_municipio, ''), parcelas.sigpac_municipio),
+  sigpac_poligono  = coalesce(nullif(excluded.sigpac_poligono,  ''), parcelas.sigpac_poligono),
+  sigpac_parcela   = coalesce(nullif(excluded.sigpac_parcela,   ''), parcelas.sigpac_parcela),
+  sigpac_recinto   = coalesce(nullif(excluded.sigpac_recinto,   ''), parcelas.sigpac_recinto),
+  variedad         = coalesce(nullif(excluded.variedad,         ''), parcelas.variedad);
+
+-- Evitar duplicados por codigo sin unique constraint: left join anti-join
+-- Inserta palots con id explícito cuando esté presente y usa upsert por id
+\if :{?PALOTS}
+  insert into palots(id, codigo)
+  select s.id, s.codigo
+  from s_palots s
+  where s.id is not null and s.codigo is not null and s.codigo <> ''
+  on conflict (id) do update set codigo = excluded.codigo;
+
+  -- Para filas sin id, evita duplicados por codigo mediante anti-join
+  insert into palots(codigo)
+  select distinct s.codigo
+  from s_palots s
+  left join palots p on p.codigo = s.codigo
+  where s.id is null and s.codigo is not null and s.codigo <> '' and p.id is null;
+\else
+  \echo Omitiendo volcado de palots: variable PALOTS no definida
+\endif
+
+\if :{?OLIVOS}
+  insert into olivos(id, id_parcela, variedad)
+  select id, id_parcela, variedad from s_olivos
+  on conflict (id) do update set
+    id_parcela = excluded.id_parcela,
+    variedad = coalesce(excluded.variedad, olivos.variedad);
+\else
+  \echo Omitiendo volcado de olivos: variable OLIVOS no definida
+\endif
+
+\echo Ajustando secuencias
+select setval(pg_get_serial_sequence('parcelas','id'), coalesce((select max(id) from parcelas),0));
+select setval(pg_get_serial_sequence('palots','id'), coalesce((select max(id) from palots),0));
+select setval(pg_get_serial_sequence('olivos','id'), coalesce((select max(id) from olivos),0));
+
+\echo Hecho.
