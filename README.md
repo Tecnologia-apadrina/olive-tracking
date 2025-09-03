@@ -1,2 +1,9 @@
 # olive-tracking
-Aplicación para gestionar la cosecha de olivas en apadrinaunolivo.org
+
+Aplicación PWA para gestionar la cosecha de olivas y la relación parcela-palot.
+
+## Estructura del proyecto
+- **frontend**: React + Vite.
+- **backend**: API Node.js con Express.
+
+Cada directorio contiene su propio `package.json`. Instala dependencias con `npm install` y usa `npm dev`/`npm start` según corresponda.
