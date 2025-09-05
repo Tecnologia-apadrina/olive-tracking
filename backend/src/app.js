@@ -6,8 +6,12 @@ const palotRoutes = require('./routes/palots');
 const parcelasPalotsRoutes = require('./routes/parcelasPalots');
 const olivoRoutes = require('./routes/olivos');
 const parcelasRoutes = require('./routes/parcelas');
+const usersRoutes = require('./routes/users');
+const importRoutes = require('./routes/import');
 app.use(cors());
-app.use(express.json());
+// Increase payload limit to allow large CSV uploads wrapped in JSON
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 // Attach authentication middleware
 app.use(auth);
 // Register application routes
@@ -15,6 +19,8 @@ app.use(palotRoutes);
 app.use(parcelasPalotsRoutes);
 app.use(olivoRoutes);
 app.use(parcelasRoutes);
+app.use(usersRoutes);
+app.use(importRoutes);
 app.get('/', (req, res) => {
   res.json({message: 'API operativa'});
 });

@@ -12,8 +12,9 @@ router.get('/palots', async (req, res) => {
   }
 });
 
-// Create a new palot
+// Create a new palot (auth required)
 router.post('/palots', async (req, res) => {
+  if (!req.userId) return res.status(401).json({ error: 'No autenticado' });
   const { codigo } = req.body;
   if (!codigo) {
     return res.status(400).json({ error: 'codigo requerido' });
@@ -24,6 +25,16 @@ router.post('/palots', async (req, res) => {
     [codigo, userId]
   );
   res.status(201).json(result);
+});
+
+// Delete palot (admin suggested)
+router.delete('/palots/:id', async (req, res) => {
+  if (!req.userId || req.userRole !== 'admin') return res.status(403).json({ error: 'Requiere admin' });
+  const { id } = req.params;
+  // Remove relations first to satisfy FK
+  await db.public.none('DELETE FROM parcelas_palots WHERE id_palot = $1', [id]);
+  await db.public.none('DELETE FROM palots WHERE id = $1', [id]);
+  res.status(204).end();
 });
 
 module.exports = router;

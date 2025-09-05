@@ -19,8 +19,8 @@ describe('Palots API', () => {
   it('registers parcela-palot relation', async () => {
     // Create parcela directly in DB
     const parcela = await db.public.one(
-      'INSERT INTO parcelas(nombre, id_usuario) VALUES($1, $2) RETURNING *',
-      ['Parcela 1', 1]
+      'INSERT INTO parcelas(nombre) VALUES($1) RETURNING *',
+      ['Parcela 1']
     );
     // Create palot via API
     const palotRes = await request(app)

@@ -14,7 +14,7 @@ create table if not exists s_parcelas(
   variedad text
 );
 create table if not exists s_palots(id int, codigo text);
-create table if not exists s_olivos(id int, id_parcela int, variedad text);
+create table if not exists s_olivos(id int, id_parcela int);
 
 truncate s_parcelas;
 truncate s_palots;
@@ -54,7 +54,6 @@ select case when count(*) = 0 then 'on' else 'off' end as oldfmt from s_parcelas
 create table if not exists parcelas(
   id serial primary key,
   nombre text,
-  id_usuario integer,
   sigpac_municipio text,
   sigpac_poligono text,
   sigpac_parcela text,
@@ -67,6 +66,9 @@ alter table if exists parcelas add column if not exists sigpac_poligono  text;
 alter table if exists parcelas add column if not exists sigpac_parcela   text;
 alter table if exists parcelas add column if not exists sigpac_recinto   text;
 alter table if exists parcelas add column if not exists variedad         text;
+alter table if exists parcelas add column if not exists nombre_interno   text;
+alter table if exists parcelas add column if not exists porcentaje       numeric;
+alter table if exists parcelas drop column if exists id_usuario;
 
 \echo Volcando staging a tablas definitivas
 insert into parcelas(id, nombre, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, variedad)
@@ -99,11 +101,10 @@ on conflict (id) do update set
 \endif
 
 \if :{?OLIVOS}
-  insert into olivos(id, id_parcela, variedad)
-  select id, id_parcela, variedad from s_olivos
+  insert into olivos(id, id_parcela)
+  select id, id_parcela from s_olivos
   on conflict (id) do update set
-    id_parcela = excluded.id_parcela,
-    variedad = coalesce(excluded.variedad, olivos.variedad);
+    id_parcela = excluded.id_parcela;
 \else
   \echo Omitiendo volcado de olivos: variable OLIVOS no definida
 \endif
