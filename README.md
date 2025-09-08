@@ -54,7 +54,7 @@ Pasos:
    - `VITE_API_URL=` (déjalo vacío para usar el proxy `/api`)
 
 2) Construye e inicia en segundo plano:
-   - `docker compose build`
+   - `COMMIT_SHA=$(git rev-parse --short HEAD) BUILD_TIME=$(date -Is) docker compose build`
    - `docker compose up -d`
 
 3) Accede a la app en tu servidor: `http://<tu_host>` (puerto 80).
@@ -66,3 +66,67 @@ Notas operativas:
 - Para un backup del volumen de datos: `docker run --rm -v olive_pgdata:/var/lib/postgresql/data -v "$PWD":/backup alpine tar czf /backup/pgdata.tgz -C / var/lib/postgresql/data`.
 - Para logs: `docker compose logs -f backend` y `docker compose logs -f web`.
 - Para actualizar: `docker compose pull && docker compose up -d --build`.
+
+### Autenticación y proxy en el contenedor `web`
+
+- El contenedor `web` (Nginx) proxy la API a `backend:3000` en la ruta `/api`.
+- Se reenvía explícitamente la cabecera `Authorization` hacia el backend (Basic Auth):
+  - Configuración en `frontend/nginx.conf`:
+    - `proxy_set_header Authorization $http_authorization;`
+- Si cambias esta configuración, reconstruye solo el `web` y reinícialo:
+  - `docker compose build web && docker compose up -d web`
+- Recarga dura el navegador (Ctrl+F5) para evitar caché del service worker.
+
+### Comprobaciones rápidas (Docker)
+
+- Probar versión: `curl http://localhost/api/version`
+- Probar autenticación (admin/admin por defecto):
+  - `B64=$(printf 'admin:admin' | base64)`
+  - `curl -H "Authorization: Basic $B64" http://localhost/api/me`
+  - Debe responder `{ "role": "admin", ... }`. Si no, revisa `docker compose logs -f web backend`.
+
+### Base de datos en Docker
+
+- La BD en Docker es un Postgres propio (servicio `db`) con su volumen `pgdata`; no es tu Postgres local.
+- El backend en Docker se conecta a: `postgres://trazo:trazo@db:5432/trazoliva` (valores por defecto del `.env` raíz).
+- Usuario admin inicial en esa BD:
+  - Se siembra al arrancar `backend` con `ADMIN_USER`/`ADMIN_PASS` (por defecto `admin/admin`).
+  - Cambia estas variables en tu `.env` raíz si quieres un admin distinto antes de levantar los contenedores.
+
+Conectar a la BD del contenedor:
+- Opción 1: shell dentro del contenedor
+  - `docker compose exec -it db psql -U ${POSTGRES_USER:-trazo} -d ${POSTGRES_DB:-trazoliva}`
+- Opción 2: exponer el puerto 5432 al host (para conectar con tu psql/GUI)
+  - Añade en `services.db` de `docker-compose.yml`:
+    - `ports: ["5432:5432"]`
+  - Reinicia solo la BD: `docker compose up -d db`
+
+Importar CSVs en la BD de Docker:
+- Usa `docker compose exec -T db psql -U ${POSTGRES_USER:-trazo} -d ${POSTGRES_DB:-trazoliva} -v PARCELAS=/ruta -v PALOTS=/ruta -v OLIVOS=/ruta -f /app/backend/db/import.psql` tras copiar los CSVs dentro del contenedor o montar un volumen.
+
+## Versionado de la app
+
+- El frontend muestra la versión en el pie: hace `GET /api/version` al backend.
+- El backend compone una versión basada en Git y en el `package.json` del backend:
+  - Formato: `X.Y.Z+<conteoCommits>-<shaCorto>` (ej.: `1.0.0+123-abc1234`).
+  - Si no hay Git disponible (imagen ya compilada), usa variables de build `COMMIT_SHA` y `BUILD_TIME` cuando están presentes.
+
+Desarrollo local (sin Docker):
+- Backend en memoria (sin Postgres): `cd backend && npm run dev:mem`
+- Frontend: `cd frontend && npm run dev` (Vite proxya `/api` → `http://localhost:3000`).
+- Usuario inicial: `admin/admin`.
+
+Producción con Docker:
+- Pasa los argumentos de build para que la imagen tenga la referencia del commit y fecha de compilación:
+  - `COMMIT_SHA=$(git rev-parse --short HEAD) BUILD_TIME=$(date -Is) docker compose build`
+- `docker-compose.yml` ya reenvía estos ARGs al `Dockerfile` del backend.
+ - El servicio `backend` ahora expone `3000:3000` para pruebas desde el host.
+
+### Desarrollo local vs Docker
+
+- Local (Vite + backend memoria):
+  - `cd backend && npm run dev:mem`
+  - `cd frontend && npm run dev` (Vite proxya `/api` a `http://localhost:3000`).
+- Docker (Nginx + backend + Postgres):
+  - `docker compose up -d --build` y accede a `http://localhost`.
+  - No uses el servidor de Vite en este modo; Nginx ya sirve el frontend y proxya `/api`.

@@ -24,6 +24,7 @@ function App() {
   const [kgsDraft, setKgsDraft] = useState({}); // { [palotId]: string }
   const [kgSaveStatus, setKgSaveStatus] = useState({}); // { [palotId]: 'idle'|'saving'|'ok'|'error' }
   const debounceRef = useRef(null);
+  const [appVersion, setAppVersion] = useState('');
 
   useEffect(() => {
     // Restore token
@@ -51,6 +52,14 @@ function App() {
   // API base configurable: usa VITE_API_URL si está definida, si no, usa ruta relativa '/api'
   // En despliegue con Nginx, se proxia '/api' al backend.
   const apiBase = import.meta.env?.VITE_API_URL || '/api';
+  // Load app version once
+  useEffect(() => {
+    fetch(`${apiBase}/version`).then(r => r.ok ? r.json() : null).then(v => {
+      if (v && (v.appVersion || v.version)) {
+        setAppVersion(v.appVersion || v.version);
+      }
+    }).catch(() => {});
+  }, []);
   const authHeaders = authToken ? { Authorization: `Basic ${authToken}` } : {};
   const setToken = (u, p) => {
     const token = btoa(`${u}:${p}`);
@@ -350,6 +359,7 @@ function App() {
           {authToken ? (
             <>
               <span className="pill">Sesión: {authUser}</span>
+              {authRole && <span className="pill">Rol: {authRole}</span>}
               <a className={`btn ${view === 'main' ? '' : 'btn-outline'}`} href="/" onClick={(e) => { e.preventDefault(); navigate('/'); setMenuOpen(false); }}>App</a>
               {authRole === 'admin' && (
                 <a className={`btn ${view === 'users' ? '' : 'btn-outline'}`} href="/users" onClick={(e) => { e.preventDefault(); navigate('/users'); setMenuOpen(false); }}>Usuarios</a>
@@ -496,8 +506,13 @@ function App() {
           )}
         </div>
       </div>
-      </>
-      )}
+      <div style={{ marginTop: '1rem', textAlign: 'right' }}>
+        <span className="muted" style={{ fontSize: '0.85rem' }}>
+          Versión: {appVersion || 'cargando…'}
+        </span>
+      </div>
+    </>
+    )}
 
       {view === 'users' && (
         <UsersView apiBase={apiBase} authHeaders={authHeaders} />

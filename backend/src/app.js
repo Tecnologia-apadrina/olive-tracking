@@ -8,6 +8,7 @@ const olivoRoutes = require('./routes/olivos');
 const parcelasRoutes = require('./routes/parcelas');
 const usersRoutes = require('./routes/users');
 const importRoutes = require('./routes/import');
+const versionRoutes = require('./routes/version');
 app.use(cors());
 // Increase payload limit to allow large CSV uploads wrapped in JSON
 app.use(express.json({ limit: '50mb' }));
@@ -21,6 +22,7 @@ app.use(olivoRoutes);
 app.use(parcelasRoutes);
 app.use(usersRoutes);
 app.use(importRoutes);
+app.use(versionRoutes);
 app.get('/', (req, res) => {
   res.json({message: 'API operativa'});
 });

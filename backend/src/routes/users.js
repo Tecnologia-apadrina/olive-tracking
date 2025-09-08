@@ -13,7 +13,12 @@ const requireAdmin = (req, res, next) => {
   next();
 };
 
-// Create user (admin or if first user)
+// Current user info (simple health of auth)
+router.get('/me', requireAuth, async (req, res) => {
+  res.json({ id: req.userId, username: req.username, role: req.userRole });
+});
+
+// Create user (admin)
 router.post('/users', requireAuth, requireAdmin, async (req, res) => {
   const { username, password, role } = req.body || {};
   if (!username || !password) return res.status(400).json({ error: 'username y password requeridos' });
@@ -64,7 +69,3 @@ router.delete('/users/:id', requireAuth, requireAdmin, async (req, res) => {
 });
 
 module.exports = router;
-// Current user info
-router.get('/me', requireAuth, async (req, res) => {
-  res.json({ id: req.userId, username: req.username, role: req.userRole });
-});

@@ -64,7 +64,8 @@ const SCHEMA_SQL_ALTER = `
   ALTER TABLE IF EXISTS olivos DROP COLUMN IF EXISTS id_usuario;
 `;
 
-const connectionString = process.env.DATABASE_URL;
+const forceMem = (process.env.USE_MEM || '').toLowerCase() === '1' || (process.env.USE_MEM || '').toLowerCase() === 'true';
+const connectionString = forceMem ? '' : process.env.DATABASE_URL;
 
 if (connectionString) {
   // Use real Postgres via node-postgres

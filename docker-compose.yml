@@ -20,7 +20,12 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      args:
+        COMMIT_SHA: ${COMMIT_SHA-}
+        BUILD_TIME: ${BUILD_TIME-}
     restart: unless-stopped
+    ports:
+      - "3000:3000"
     environment:
       NODE_ENV: production
       PORT: 3000
@@ -49,4 +54,3 @@ services:
 
 volumes:
   pgdata:
-
