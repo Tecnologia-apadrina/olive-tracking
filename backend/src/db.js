@@ -4,7 +4,8 @@ const dotenv = require('dotenv');
 const { hashPassword } = require('./utils/password');
 dotenv.config();
 
-const SCHEMA_SQL = `
+// Base schema (compatible with pg-mem): only CREATE TABLE statements.
+const SCHEMA_SQL_BASE = `
   CREATE TABLE IF NOT EXISTS parcelas (
     id SERIAL PRIMARY KEY,
     nombre TEXT,
@@ -37,7 +38,17 @@ const SCHEMA_SQL = `
     kgs NUMERIC,
     created_at TIMESTAMPTZ DEFAULT now()
   );
-  -- Ensure new columns exist when table already created
+
+  CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    role TEXT DEFAULT 'user'
+  );
+`;
+
+// Postgres-only migrations to evolve existing DBs.
+const SCHEMA_SQL_ALTER = `
   ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS sigpac_municipio TEXT;
   ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS sigpac_poligono TEXT;
   ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS sigpac_parcela TEXT;
@@ -51,14 +62,6 @@ const SCHEMA_SQL = `
   ALTER TABLE IF EXISTS palots ADD COLUMN IF NOT EXISTS kgs NUMERIC;
   ALTER TABLE IF EXISTS olivos DROP COLUMN IF EXISTS variedad;
   ALTER TABLE IF EXISTS olivos DROP COLUMN IF EXISTS id_usuario;
-  
-  -- Users table for authentication
-  CREATE TABLE IF NOT EXISTS users (
-    id SERIAL PRIMARY KEY,
-    username TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    role TEXT DEFAULT 'user'
-  );
 `;
 
 const connectionString = process.env.DATABASE_URL;
@@ -69,7 +72,10 @@ if (connectionString) {
 
   // Initialize schema on startup
   const init = async () => {
-    await pool.query(SCHEMA_SQL);
+    // Ensure base schema exists
+    await pool.query(SCHEMA_SQL_BASE);
+    // Apply Postgres-specific ALTERs for existing DBs
+    await pool.query(SCHEMA_SQL_ALTER);
     // Seed admin user if not present
     const adminUser = process.env.ADMIN_USER || 'admin';
     const adminPass = process.env.ADMIN_PASS || 'admin';
@@ -104,14 +110,15 @@ if (connectionString) {
 } else {
   // In-memory DB for dev/tests (pg-mem)
   const mem = newDb();
-  mem.public.none(SCHEMA_SQL);
+  // Only apply base schema for pg-mem (ALTER .. IF EXISTS not supported)
+  mem.public.none(SCHEMA_SQL_BASE);
   try {
     const adminUser = process.env.ADMIN_USER || 'admin';
     const adminPass = process.env.ADMIN_PASS || 'admin';
     const hash = hashPassword(adminPass);
+    const esc = (s) => String(s).replace(/'/g, "''");
     mem.public.none(
-      `INSERT INTO users(username, password_hash, role) VALUES($1, $2, 'admin')`,
-      [adminUser, hash]
+      `INSERT INTO users(username, password_hash, role) VALUES('${esc(adminUser)}', '${esc(hash)}', 'admin')`
     );
   } catch (_) {}
 

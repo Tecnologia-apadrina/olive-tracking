@@ -31,4 +31,38 @@ Notas:
   - `docker cp palots.csv olive-pg:/tmp/palots.csv`
   - `docker cp olivos.csv olive-pg:/tmp/olivos.csv`
   - `docker exec -e PGPASSWORD=postgres -it olive-pg psql -U postgres -d olive -v PARCELAS=/tmp/parcelas.csv -v PALOTS=/tmp/palots.csv -v OLIVOS=/tmp/olivos.csv -f /app/backend/db/import.psql`
-  - Asegúrate de que la ruta del repositorio esté montada en el contenedor o copia también `backend/db/import.psql`.
+- Asegúrate de que la ruta del repositorio esté montada en el contenedor o copia también `backend/db/import.psql`.
+
+## Despliegue con Docker (producción)
+
+Se incluye una orquestación con Docker Compose que levanta:
+- `db`: Postgres 16
+- `backend`: API Node en `:3000`
+- `web`: Nginx sirviendo el frontend compilado en `:80` y proxy `/api` al backend
+
+Arquitectura:
+- El frontend usa por defecto `'/api'` como base de la API. Nginx reescribe `/api/*` hacia el backend y elimina el prefijo.
+- El backend expone rutas sin prefijo (p. ej. `/palots`, `/users`, …) y escucha en `:3000`.
+
+Pasos:
+1) Configura variables (opcional) creando un `.env` en la raíz con:
+   - `POSTGRES_DB=trazoliva`
+   - `POSTGRES_USER=trazo`
+   - `POSTGRES_PASSWORD=trazo`
+   - `ADMIN_USER=admin` (opcional)
+   - `ADMIN_PASS=admin` (opcional)
+   - `VITE_API_URL=` (déjalo vacío para usar el proxy `/api`)
+
+2) Construye e inicia en segundo plano:
+   - `docker compose build`
+   - `docker compose up -d`
+
+3) Accede a la app en tu servidor: `http://<tu_host>` (puerto 80).
+
+Importar CSVs dentro de Postgres en Docker:
+- Copia los CSVs al contenedor `db` o monta un volumen y ejecuta `psql` apuntando a `DATABASE_URL=postgres://<user>:<pass>@db:5432/<db>`.
+
+Notas operativas:
+- Para un backup del volumen de datos: `docker run --rm -v olive_pgdata:/var/lib/postgresql/data -v "$PWD":/backup alpine tar czf /backup/pgdata.tgz -C / var/lib/postgresql/data`.
+- Para logs: `docker compose logs -f backend` y `docker compose logs -f web`.
+- Para actualizar: `docker compose pull && docker compose up -d --build`.

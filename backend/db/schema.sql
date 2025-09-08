@@ -1,10 +1,9 @@
--- olive-tracking production schema and initial admin user
--- Usage:
---   psql "$DATABASE_URL" -f backend/db/schema.sql
+-- Esquema de base de datos para olive-tracking (producción)
+-- Ejecuta con: psql "$DATABASE_URL" -f backend/db/schema.sql
 
 BEGIN;
 
--- Core tables
+-- Tablas base (equivalentes a SCHEMA_SQL_BASE en backend/src/db.js)
 CREATE TABLE IF NOT EXISTS parcelas (
   id SERIAL PRIMARY KEY,
   nombre TEXT,
@@ -38,7 +37,7 @@ CREATE TABLE IF NOT EXISTS parcelas_palots (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- Authentication
+-- Autenticación
 CREATE TABLE IF NOT EXISTS users (
   id SERIAL PRIMARY KEY,
   username TEXT UNIQUE NOT NULL,
@@ -46,8 +45,23 @@ CREATE TABLE IF NOT EXISTS users (
   role TEXT DEFAULT 'user'
 );
 
+-- Migraciones Postgres (equivalentes a SCHEMA_SQL_ALTER)
+ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS sigpac_municipio TEXT;
+ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS sigpac_poligono TEXT;
+ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS sigpac_parcela TEXT;
+ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS sigpac_recinto TEXT;
+ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS variedad TEXT;
+ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS nombre_interno TEXT;
+ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS porcentaje NUMERIC;
+ALTER TABLE IF EXISTS parcelas DROP COLUMN IF EXISTS id_usuario;
+ALTER TABLE IF EXISTS parcelas_palots ADD COLUMN IF NOT EXISTS kgs NUMERIC;
+ALTER TABLE IF EXISTS parcelas_palots ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
+ALTER TABLE IF EXISTS palots ADD COLUMN IF NOT EXISTS kgs NUMERIC;
+ALTER TABLE IF EXISTS olivos DROP COLUMN IF EXISTS variedad;
+ALTER TABLE IF EXISTS olivos DROP COLUMN IF EXISTS id_usuario;
+
 -- Seed Admin user (password: Diagnoses5-Hazard3)
--- Hash format matches backend/src/utils/password.js (scrypt)
+-- Hash scrypt compatible con backend/src/utils/password.js
 INSERT INTO users(username, password_hash, role)
 VALUES (
   'admin',
@@ -56,5 +70,17 @@ VALUES (
 )
 ON CONFLICT (username) DO NOTHING;
 
-COMMIT;
+-- (Opcional) Ajuste de secuencias al máximo id actual
+DO $$
+BEGIN
+  PERFORM setval(pg_get_serial_sequence('parcelas','id'), COALESCE((SELECT max(id) FROM parcelas), 0));
+  PERFORM setval(pg_get_serial_sequence('palots','id'),   COALESCE((SELECT max(id) FROM palots),   0));
+  PERFORM setval(pg_get_serial_sequence('olivos','id'),   COALESCE((SELECT max(id) FROM olivos),   0));
+  PERFORM setval(pg_get_serial_sequence('users','id'),    COALESCE((SELECT max(id) FROM users),    0));
+  PERFORM setval(pg_get_serial_sequence('parcelas_palots','id'), COALESCE((SELECT max(id) FROM parcelas_palots), 0));
+EXCEPTION WHEN undefined_table THEN
+  -- Ignora si la tabla aún no existe
+  NULL;
+END $$;
 
+COMMIT;

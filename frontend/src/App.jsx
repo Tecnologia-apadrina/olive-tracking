@@ -48,7 +48,9 @@ function App() {
     return () => window.removeEventListener('popstate', onPop);
   }, []);
 
-  const apiBase = 'http://localhost:3000';
+  // API base configurable: usa VITE_API_URL si está definida, si no, usa ruta relativa '/api'
+  // En despliegue con Nginx, se proxia '/api' al backend.
+  const apiBase = import.meta.env?.VITE_API_URL || '/api';
   const authHeaders = authToken ? { Authorization: `Basic ${authToken}` } : {};
   const setToken = (u, p) => {
     const token = btoa(`${u}:${p}`);
@@ -100,9 +102,7 @@ function App() {
     debounceRef.current = setTimeout(async () => {
       setStatus('loading');
       try {
-        // Nota: usamos el backend local directo para evitar el prefijo /api
-        // Ajustar a `${import.meta.env.VITE_API_URL}` si se parametriza
-        const res = await fetch(`http://localhost:3000/olivos/${encodeURIComponent(olivo)}/parcela`, { headers: { ...authHeaders } });
+        const res = await fetch(`${apiBase}/olivos/${encodeURIComponent(olivo)}/parcela`, { headers: { ...authHeaders } });
         if (!res.ok) {
           throw new Error('No encontrado');
         }
