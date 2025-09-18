@@ -39,6 +39,21 @@ function buildVersionInfo() {
   else if (shortSha) appVersion = `${pkgVersion ? pkgVersion + '+' : ''}${shortSha}`;
   else appVersion = pkgVersion;
 
+  // Database URL info (be careful exposing secrets)
+  const rawDbUrl = process.env.DATABASE_URL || null;
+  const safeDb = (() => {
+    if (!rawDbUrl) return { url: null, safe: null };
+    try {
+      const u = new URL(rawDbUrl);
+      const safeAuth = u.username ? `${u.username}${u.password ? ':*****' : ''}@` : '';
+      const safe = `${u.protocol}//${safeAuth}${u.host}${u.pathname}${u.search}${u.hash}`;
+      return { url: rawDbUrl, safe };
+    } catch (_) {
+      // Fallback simple mask for non-standard URLs
+      return { url: rawDbUrl, safe: rawDbUrl.replace(/:\w+@/, ':*****@') };
+    }
+  })();
+
   return {
     appVersion,
     version: appVersion, // alias for clients expecting `version`
@@ -49,6 +64,7 @@ function buildVersionInfo() {
       branch: branch || null,
       tag: tag || null,
       buildTime: buildTime || null,
+      db: safeDb,
     },
   };
 }
@@ -59,5 +75,10 @@ router.get('/version', (_req, res) => {
   res.json(info);
 });
 
-module.exports = router;
+// Stateless apps con Basic Auth no mantienen sesión en el servidor.
+// Este endpoint existe solo como conveniencia para UIs/operadores.
+router.get('/logout', (_req, res) => {
+  res.json({ ok: true, message: 'Logout: borra tus credenciales en el cliente.' });
+});
 
+module.exports = router;

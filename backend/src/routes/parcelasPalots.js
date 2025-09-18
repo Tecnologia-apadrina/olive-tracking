@@ -27,6 +27,7 @@ router.post('/parcelas/:parcelaId/palots', async (req, res) => {
 
 // List palots for a parcela
 router.get('/parcelas/:parcelaId/palots', async (req, res) => {
+  if (!req.userId) return res.status(401).json({ error: 'No autenticado' });
   const { parcelaId } = req.params;
   try {
     const rows = await db.public.many(
@@ -51,7 +52,8 @@ router.delete('/parcelas/:parcelaId/palots/:palotId', async (req, res) => {
 });
 
 // List all parcela–palot relations
-router.get('/parcelas-palots', async (_req, res) => {
+router.get('/parcelas-palots', async (req, res) => {
+  if (!req.userId) return res.status(401).json({ error: 'No autenticado' });
   try {
     const rows = await db.public.many(
       `SELECT pp.id,

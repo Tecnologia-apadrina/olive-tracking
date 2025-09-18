@@ -25,6 +25,9 @@ function App() {
   const [kgSaveStatus, setKgSaveStatus] = useState({}); // { [palotId]: 'idle'|'saving'|'ok'|'error' }
   const debounceRef = useRef(null);
   const [appVersion, setAppVersion] = useState('');
+  const [dbUrl, setDbUrl] = useState('');
+  const [loginError, setLoginError] = useState('');
+  const [loginBusy, setLoginBusy] = useState(false);
 
   useEffect(() => {
     // Restore token
@@ -32,6 +35,14 @@ function App() {
     const u = localStorage.getItem('authUser');
     if (t) setAuthToken(t);
     if (u) setAuthUser(u);
+    // Handle /logout URL: limpia sesión y vuelve a inicio
+    const initialPath = window.location?.pathname || '/';
+    if (initialPath === '/logout') {
+      clearToken();
+      if (window.history && window.location) {
+        window.history.replaceState({}, '', '/');
+      }
+    }
     if (t) {
       fetch(`${apiBase}/me`, { headers: { Authorization: `Basic ${t}` } })
         .then(r => r.ok ? r.json() : null)
@@ -39,10 +50,18 @@ function App() {
         .catch(() => setAuthRole(''));
     }
     // Initialize route from path
-    const path = window.location?.pathname || '/';
+    const path = (window.location?.pathname || '/') === '/logout' ? '/' : (window.location?.pathname || '/');
     setView(path === '/users' ? 'users' : (path === '/olivos' ? 'olivos' : (path === '/parcelas' ? 'parcelas' : (path === '/palots' ? 'palots' : 'main'))));
     const onPop = () => {
       const p = window.location?.pathname || '/';
+      if (p === '/logout') {
+        clearToken();
+        if (window.history && window.location) {
+          window.history.replaceState({}, '', '/');
+        }
+        setView('main');
+        return;
+      }
       setView(p === '/users' ? 'users' : (p === '/olivos' ? 'olivos' : (p === '/parcelas' ? 'parcelas' : (p === '/palots' ? 'palots' : 'main'))));
     };
     window.addEventListener('popstate', onPop);
@@ -58,6 +77,8 @@ function App() {
       if (v && (v.appVersion || v.version)) {
         setAppVersion(v.appVersion || v.version);
       }
+      const safeDb = v?.details?.db?.safe || v?.details?.db?.url || '';
+      if (safeDb) setDbUrl(safeDb);
     }).catch(() => {});
   }, []);
   const authHeaders = authToken ? { Authorization: `Basic ${authToken}` } : {};
@@ -73,6 +94,22 @@ function App() {
       .then(me => setAuthRole(me?.role || ''))
       .catch(() => setAuthRole(''));
   };
+
+  // Login con validación: solo guarda token si /me responde OK
+  const performLogin = async (u, p) => {
+    try {
+      setLoginError('');
+      setLoginBusy(true);
+      const token = btoa(`${u}:${p}`);
+      const res = await fetch(`${apiBase}/me`, { headers: { Authorization: `Basic ${token}` } });
+      if (!res.ok) throw new Error('Credenciales no válidas');
+      setToken(u, p);
+    } catch (_) {
+      setLoginError('Credenciales incorrectas.');
+    } finally {
+      setLoginBusy(false);
+    }
+  };
   const clearToken = () => {
     setAuthToken('');
     setAuthUser('');
@@ -81,6 +118,8 @@ function App() {
     localStorage.removeItem('authToken');
     localStorage.removeItem('authUser');
   };
+
+  // No hagas returns antes de todos los hooks; la UI de login se renderiza condicionalmente más abajo
 
   const navigate = (path) => {
     if (window.history && window.location) {
@@ -175,10 +214,10 @@ function App() {
     }
   };
 
-  // Cargar todas las relaciones al montar
+  // Cargar todas las relaciones al montar (solo con sesión)
   useEffect(() => {
-    loadAllRels();
-  }, []);
+    if (authToken) loadAllRels();
+  }, [authToken]);
 
   const handleSave = async () => {
     setMessage('');
@@ -345,19 +384,54 @@ function App() {
 
   return (
     <div className="container">
-      <div className="card header" style={{ marginBottom: '1rem' }}>
-        <div className="brand">
-          <img src="/Trazoliva-trans_tiny.png" alt="Trazoliva" className="logo" />
-          <div>
-            <h1>Trazoliva</h1>
+      {!authToken ? (
+        <>
+          <div className="card" style={{ maxWidth: 420, margin: '4rem auto' }}>
+            <h1>Iniciar sesión</h1>
+            <div className="row">
+              <label>Usuario</label>
+              <input style={{ width: '100%' }} placeholder="usuario" value={authUser} onChange={e => setAuthUser(e.target.value)} />
+            </div>
+            <div className="row">
+              <label>Contraseña</label>
+              <input style={{ width: '100%' }} placeholder="contraseña" type="password" value={authPass} onChange={e => setAuthPass(e.target.value)} />
+            </div>
+            <div className="controls" style={{ justifyContent: 'space-between' }}>
+              <span className="muted">Usa tus credenciales de TrazOliva</span>
+              <button className="btn" onClick={() => performLogin(authUser, authPass)} disabled={!authUser || !authPass || loginBusy}>
+                {loginBusy ? 'Entrando…' : 'Entrar'}
+              </button>
+            </div>
+            {/* Admin hints removed intentionally */}
+            {loginError && (
+              <div className="row">
+                <span className="state error">{loginError}</span>
+              </div>
+            )}
           </div>
-        </div>
-        <button className="hamburger" aria-label="Abrir menú" aria-expanded={menuOpen} onClick={() => setMenuOpen(o => !o)}>
-          ☰
-        </button>
-        <div className={`header-nav ${menuOpen ? 'open' : ''}`}>
-          {authToken ? (
-            <>
+          <div style={{ marginTop: '1rem', textAlign: 'right' }}>
+            <span className="muted" style={{ fontSize: '0.85rem', display: 'block' }}>
+              Versión: {appVersion || 'cargando…'}
+            </span>
+            {dbUrl && (
+              <span className="muted" style={{ fontSize: '0.85rem', display: 'block' }}>
+                DB: {dbUrl}
+              </span>
+            )}
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="card header" style={{ marginBottom: '1rem' }}>
+            <div className="brand">
+              <a href="/" className="brand-logo-link" onClick={(e) => { e.preventDefault(); navigate('/'); }}>
+                <img src="/Trazoliva-trans_tiny.png" alt="Trazoliva" className="logo clickable" />
+              </a>
+            </div>
+            <button className="hamburger" aria-label="Abrir menú" aria-expanded={menuOpen} onClick={() => setMenuOpen(o => !o)}>
+              ☰
+            </button>
+            <div className={`header-nav ${menuOpen ? 'open' : ''}`}>
               <span className="pill">Sesión: {authUser}</span>
               {authRole && <span className="pill">Rol: {authRole}</span>}
               <a className={`btn ${view === 'main' ? '' : 'btn-outline'}`} href="/" onClick={(e) => { e.preventDefault(); navigate('/'); setMenuOpen(false); }}>App</a>
@@ -374,19 +448,11 @@ function App() {
                 <a className={`btn ${view === 'palots' ? '' : 'btn-outline'}`} href="/palots" onClick={(e) => { e.preventDefault(); navigate('/palots'); setMenuOpen(false); }}>Palots</a>
               )}
               <button className="btn btn-outline" onClick={() => { clearToken(); setMenuOpen(false); }}>Salir</button>
-            </>
-          ) : (
-            <>
-              <input style={{ width: 140 }} placeholder="usuario" value={authUser} onChange={e => setAuthUser(e.target.value)} />
-              <input style={{ width: 140 }} placeholder="contraseña" type="password" value={authPass} onChange={e => setAuthPass(e.target.value)} />
-              <button className="btn" onClick={() => { setToken(authUser, authPass); setMenuOpen(false); }} disabled={!authUser || !authPass}>Entrar</button>
-            </>
-          )}
-        </div>
-      </div>
+            </div>
+          </div>
 
       {view === 'main' && (
-      <>
+        <>
       <div className="card grid">
 
         <div className="row">
@@ -507,34 +573,41 @@ function App() {
         </div>
       </div>
       <div style={{ marginTop: '1rem', textAlign: 'right' }}>
-        <span className="muted" style={{ fontSize: '0.85rem' }}>
+        <span className="muted" style={{ fontSize: '0.85rem', display: 'block' }}>
           Versión: {appVersion || 'cargando…'}
         </span>
+        {dbUrl && (
+          <span className="muted" style={{ fontSize: '0.85rem', display: 'block' }}>
+            DB: {dbUrl}
+          </span>
+        )}
       </div>
     </>
     )}
 
-      {view === 'users' && (
-        <UsersView apiBase={apiBase} authHeaders={authHeaders} />
+      {authToken && view === 'users' && (
+        <UsersView apiBase={apiBase} authHeaders={authHeaders} appVersion={appVersion} dbUrl={dbUrl} />
       )}
 
 
-      {view === 'olivos' && (
+      {authToken && view === 'olivos' && (
         <OlivosView apiBase={apiBase} authHeaders={authHeaders} />
       )}
 
-      {view === 'parcelas' && (
+      {authToken && view === 'parcelas' && (
         <ParcelasView apiBase={apiBase} authHeaders={authHeaders} />
       )}
 
-      {view === 'palots' && (
+      {authToken && view === 'palots' && (
         <PalotsView apiBase={apiBase} authHeaders={authHeaders} />
+      )}
+        </>
       )}
     </div>
   );
 }
 
-function UsersView({ apiBase, authHeaders }) {
+function UsersView({ apiBase, authHeaders, appVersion, dbUrl }) {
   const [users, setUsers] = React.useState([]);
   const [status, setStatus] = React.useState('idle');
   const [u, setU] = React.useState('');
@@ -639,6 +712,16 @@ function UsersView({ apiBase, authHeaders }) {
             </div>
           </div>
         ))}
+          <div style={{ marginTop: '1rem', textAlign: 'right' }}>
+            <span className="muted" style={{ fontSize: '0.85rem', display: 'block' }}>
+              Versión: {appVersion || 'cargando…'}
+            </span>
+            {dbUrl && (
+              <span className="muted" style={{ fontSize: '0.85rem', display: 'block' }}>
+                DB: {dbUrl}
+              </span>
+            )}
+          </div>
       </div>
     </div>
   );

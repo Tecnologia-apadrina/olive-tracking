@@ -43,6 +43,7 @@ router.get('/olivos', requireAuth, requireAdmin, async (_req, res) => {
 // Get parcela info for a given olivo id
 // Returns: { id, nombre, porcentaje } for the parcela
 router.get('/olivos/:olivoId/parcela', async (req, res) => {
+  if (!req.userId) return res.status(401).json({ error: 'No autenticado' });
   const { olivoId } = req.params;
   try {
     const parcela = await db.public.one(

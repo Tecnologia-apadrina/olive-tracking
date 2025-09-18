@@ -2,8 +2,9 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 
-// List all palots
+// List all palots (auth required)
 router.get('/palots', async (req, res) => {
+  if (!req.userId) return res.status(401).json({ error: 'No autenticado' });
   try {
     const palots = await db.public.many('SELECT * FROM palots');
     res.json(palots);
