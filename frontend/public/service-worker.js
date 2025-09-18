@@ -34,6 +34,13 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(req.url);
   const isHTML = req.mode === 'navigate' || (req.headers.get('accept') || '').includes('text/html');
   const isAsset = url.pathname.startsWith('/assets/');
+  const isApi = url.pathname.startsWith('/api/');
+
+  // No cache para API protegida; requiere estar online y autenticado
+  if (isApi) {
+    event.respondWith(fetch(req));
+    return;
+  }
 
   if (isHTML) {
     event.respondWith(

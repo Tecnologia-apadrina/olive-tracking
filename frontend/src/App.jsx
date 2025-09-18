@@ -45,7 +45,20 @@ function App() {
     }
     if (t) {
       fetch(`${apiBase}/me`, { headers: { Authorization: `Basic ${t}` } })
-        .then(r => r.ok ? r.json() : null)
+        .then(async (r) => {
+          if (!r.ok) {
+            // Token inválido: limpiar sesión local para evitar 401 en bucle
+            try {
+              localStorage.removeItem('authToken');
+              localStorage.removeItem('authUser');
+            } catch (_) {}
+            setAuthToken('');
+            setAuthUser('');
+            setAuthRole('');
+            return null;
+          }
+          return r.json();
+        })
         .then(me => setAuthRole(me?.role || ''))
         .catch(() => setAuthRole(''));
     }
@@ -68,9 +81,8 @@ function App() {
     return () => window.removeEventListener('popstate', onPop);
   }, []);
 
-  // API base configurable: usa VITE_API_URL si está definida, si no, usa ruta relativa '/api'
-  // En despliegue con Nginx, se proxia '/api' al backend.
-  const apiBase = import.meta.env?.VITE_API_URL || '/api';
+  // API base fija usando proxy de Nginx en Docker
+  const apiBase = '/api';
   // Load app version once
   useEffect(() => {
     fetch(`${apiBase}/version`).then(r => r.ok ? r.json() : null).then(v => {
