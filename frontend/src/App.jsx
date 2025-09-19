@@ -554,13 +554,14 @@ function App() {
   // Agrupar por palot
   const palotGroups = React.useMemo(() => {
     const base = relTab === 'today' ? relsByTab.today : relsByTab.prev;
-    const map = new Map(); // palot_id -> { palot_id, palot_codigo, kgs, items: [] }
+    const map = new Map(); // palot_id -> { palot_id, palot_codigo, kgs, items: [], hasPct: boolean }
     for (const r of base) {
       const key = r.palot_id;
-      if (!map.has(key)) map.set(key, { palot_id: r.palot_id, palot_codigo: r.palot_codigo, kgs: r.kgs ?? null, items: [] });
+      if (!map.has(key)) map.set(key, { palot_id: r.palot_id, palot_codigo: r.palot_codigo, kgs: r.kgs ?? null, items: [], hasPct: false });
       const g = map.get(key);
       g.items.push(r);
       if (g.kgs == null && r.kgs != null) g.kgs = r.kgs;
+      if (!g.hasPct && r.parcela_porcentaje != null && Number(r.parcela_porcentaje) > 0) g.hasPct = true;
     }
     // Keep deterministic order: by palot code asc
     return Array.from(map.values()).sort((a, b) => String(a.palot_codigo).localeCompare(String(b.palot_codigo)));
@@ -802,7 +803,10 @@ function App() {
             <div className="cells">
               {palotGroups.map((g) => (
                 <div key={g.palot_id} className="cell">
-                  <div className="cell-title">Palot {g.palot_codigo}</div>
+                  <div className="cell-title">
+                    Palot {g.palot_codigo}
+                    {g.hasPct && <span className="pill pill-warning">Parcela cedente</span>}
+                  </div>
                   <div className="cell-inline">
                     <label className="kg-label" htmlFor={`kg-${g.palot_id}`}>Kgs</label>
                     <input
@@ -827,6 +831,9 @@ function App() {
                       >
                         {r.pending && (
                           <span className="kv-pending" style={{ gridColumn: '1 / -1' }}>Pendiente de sincronización</span>
+                        )}
+                        {r.parcela_porcentaje != null && Number(r.parcela_porcentaje) > 0 && (
+                          <span className="kv-warning" style={{ gridColumn: '1 / -1' }}>Parcela cedente ({String(r.parcela_porcentaje)}%)</span>
                         )}
                         <span className="kv-label">Parcela</span><span className="kv-value">{r.parcela_nombre || '-'}</span>
                         <span className="kv-label">Creado por</span><span className="kv-value">{r.created_by_username || r.created_by || '-'}</span>
