@@ -1,4 +1,21 @@
 import React, { useEffect, useRef, useState } from 'react';
+import {
+  initOfflineStore,
+  saveAuthSession,
+  loadAuthSession,
+  clearAuthSession,
+  clearAllOfflineData,
+  listRelations,
+  listRelationsByParcela,
+  getPalotByCodigo,
+  enqueueEnsurePalot,
+  enqueueRelation,
+  getParcelaByOlivo as offlineGetParcelaByOlivo,
+  getParcelaById,
+  getPendingOps,
+  getLastSnapshotIso,
+} from './offline/db';
+import { syncAll, syncDown, syncUp } from './offline/sync';
 
 function App() {
   // Auth
@@ -29,42 +46,59 @@ function App() {
   const [loginError, setLoginError] = useState('');
   const [loginBusy, setLoginBusy] = useState(false);
 
+  const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [lastSync, setLastSync] = useState(null);
+  const [offlineReady, setOfflineReady] = useState(false);
+  const [syncMessage, setSyncMessage] = useState('');
+  const [syncing, setSyncing] = useState(false);
+  const syncingRef = useRef(false);
+  const syncTimeoutRef = useRef(null);
   useEffect(() => {
-    // Restore token
-    const t = localStorage.getItem('authToken');
-    const u = localStorage.getItem('authUser');
-    if (t) setAuthToken(t);
-    if (u) setAuthUser(u);
-    // Handle /logout URL: limpia sesión y vuelve a inicio
-    const initialPath = window.location?.pathname || '/';
-    if (initialPath === '/logout') {
-      clearToken();
-      if (window.history && window.location) {
-        window.history.replaceState({}, '', '/');
-      }
-    }
-    if (t) {
-      fetch(`${apiBase}/me`, { headers: { Authorization: `Basic ${t}` } })
-        .then(async (r) => {
-          if (!r.ok) {
-            // Token inválido: limpiar sesión local para evitar 401 en bucle
-            try {
-              localStorage.removeItem('authToken');
-              localStorage.removeItem('authUser');
-            } catch (_) {}
-            setAuthToken('');
-            setAuthUser('');
-            setAuthRole('');
-            return null;
+    let cancelled = false;
+
+    const bootstrap = async () => {
+      try {
+        await initOfflineStore();
+        if (cancelled) return;
+        setOfflineReady(true);
+        const session = await loadAuthSession().catch(() => null);
+        let token = session?.token || '';
+        let username = session?.username || '';
+        let role = session?.role || '';
+        if (!token) {
+          const legacyToken = localStorage.getItem('authToken');
+          const legacyUser = localStorage.getItem('authUser');
+          token = legacyToken || '';
+          username = legacyUser || username;
+          if (legacyToken) {
+            saveAuthSession({ token: legacyToken, username: legacyUser || '', role: role || '' }).catch(() => {});
           }
-          return r.json();
-        })
-        .then(me => setAuthRole(me?.role || ''))
-        .catch(() => setAuthRole(''));
-    }
-    // Initialize route from path
-    const path = (window.location?.pathname || '/') === '/logout' ? '/' : (window.location?.pathname || '/');
-    setView(path === '/users' ? 'users' : (path === '/olivos' ? 'olivos' : (path === '/parcelas' ? 'parcelas' : (path === '/palots' ? 'palots' : 'main'))));
+        }
+        if (!cancelled && token) {
+          setAuthToken(token);
+          setAuthUser(username || '');
+          setAuthRole(role || '');
+        }
+        const last = await getLastSnapshotIso();
+        if (!cancelled && last) setLastSync(last);
+        const pending = await getPendingOps().catch(() => []);
+        if (!cancelled) setPendingCount(pending.length);
+      } catch (_) {}
+      if (cancelled) return;
+      const initialPath = window.location?.pathname || '/';
+      if (initialPath === '/logout') {
+        clearToken();
+        if (window.history && window.location) {
+          window.history.replaceState({}, '', '/');
+        }
+      }
+      const basePath = initialPath === '/logout' ? '/' : initialPath;
+      setView(basePath === '/users' ? 'users' : (basePath === '/olivos' ? 'olivos' : (basePath === '/parcelas' ? 'parcelas' : (basePath === '/palots' ? 'palots' : 'main'))));
+    };
+
+    bootstrap();
+
     const onPop = () => {
       const p = window.location?.pathname || '/';
       if (p === '/logout') {
@@ -77,58 +111,113 @@ function App() {
       }
       setView(p === '/users' ? 'users' : (p === '/olivos' ? 'olivos' : (p === '/parcelas' ? 'parcelas' : (p === '/palots' ? 'palots' : 'main'))));
     };
+
     window.addEventListener('popstate', onPop);
-    return () => window.removeEventListener('popstate', onPop);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('popstate', onPop);
+    };
+  }, []);
+
+  useEffect(() => {
+    const updateStatus = () => setIsOnline(typeof navigator !== 'undefined' ? navigator.onLine : true);
+    window.addEventListener('online', updateStatus);
+    window.addEventListener('offline', updateStatus);
+    return () => {
+      window.removeEventListener('online', updateStatus);
+      window.removeEventListener('offline', updateStatus);
+    };
+  }, []);
+
+  useEffect(() => () => {
+    if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
   }, []);
 
   // API base fija usando proxy de Nginx en Docker
   const apiBase = '/api';
-  // Load app version once
+  // Load app version whenever online
   useEffect(() => {
+    if (!isOnline) return;
+    let cancelled = false;
     fetch(`${apiBase}/version`).then(r => r.ok ? r.json() : null).then(v => {
-      if (v && (v.appVersion || v.version)) {
+      if (cancelled || !v) return;
+      if (v.appVersion || v.version) {
         setAppVersion(v.appVersion || v.version);
       }
       const safeDb = v?.details?.db?.safe || v?.details?.db?.url || '';
       if (safeDb) setDbUrl(safeDb);
     }).catch(() => {});
-  }, []);
+    return () => { cancelled = true; };
+  }, [isOnline]);
   const authHeaders = authToken ? { Authorization: `Basic ${authToken}` } : {};
-  const setToken = (u, p) => {
-    const token = btoa(`${u}:${p}`);
+  const applySession = async ({ username, token, role, persist = true }) => {
     setAuthToken(token);
-    setAuthUser(u);
-    localStorage.setItem('authToken', token);
-    localStorage.setItem('authUser', u);
-    // fetch role
-    fetch(`${apiBase}/me`, { headers: { Authorization: `Basic ${token}` } })
-      .then(r => r.ok ? r.json() : null)
-      .then(me => setAuthRole(me?.role || ''))
-      .catch(() => setAuthRole(''));
+    setAuthUser(username);
+    setAuthRole(role || '');
+    if (persist) {
+      try {
+        localStorage.setItem('authToken', token);
+        localStorage.setItem('authUser', username);
+      } catch (_) {}
+      try {
+        await saveAuthSession({ token, username, role: role || '' });
+      } catch (_) {}
+    }
   };
 
-  // Login con validación: solo guarda token si /me responde OK
   const performLogin = async (u, p) => {
     try {
       setLoginError('');
       setLoginBusy(true);
       const token = btoa(`${u}:${p}`);
+      if (!isOnline) {
+        const session = await loadAuthSession().catch(() => null);
+        if (session && session.token === token) {
+          await applySession({ username: session.username || u, token, role: session.role || '' });
+          setAuthPass('');
+          return;
+        }
+        throw new Error('offline-login');
+      }
       const res = await fetch(`${apiBase}/me`, { headers: { Authorization: `Basic ${token}` } });
       if (!res.ok) throw new Error('Credenciales no válidas');
-      setToken(u, p);
-    } catch (_) {
-      setLoginError('Credenciales incorrectas.');
+      const me = await res.json();
+      await applySession({ username: u, token, role: me?.role || '' });
+      setAuthPass('');
+      await runSync();
+    } catch (err) {
+      if (err.message === 'offline-login') {
+        setLoginError('Necesitas autenticarte en línea al menos una vez.');
+      } else if (err?.status === 401) {
+        setLoginError('Credenciales incorrectas.');
+      } else if (!isOnline) {
+        setLoginError('Sin conexión. Guarda tus credenciales online primero.');
+      } else {
+        setLoginError('Credenciales incorrectas.');
+      }
     } finally {
       setLoginBusy(false);
     }
   };
+
   const clearToken = () => {
     setAuthToken('');
     setAuthUser('');
     setAuthPass('');
     setAuthRole('');
-    localStorage.removeItem('authToken');
-    localStorage.removeItem('authUser');
+    setPendingCount(0);
+    setLastSync(null);
+    setAllRels([]);
+    setRelPalots([]);
+    setParcelaNombre('');
+    setParcelaId(null);
+    setParcelaPct(null);
+    try {
+      localStorage.removeItem('authToken');
+      localStorage.removeItem('authUser');
+    } catch (_) {}
+    clearAuthSession().catch(() => {});
+    clearAllOfflineData().catch(() => {});
   };
 
   // No hagas returns antes de todos los hooks; la UI de login se renderiza condicionalmente más abajo
@@ -145,16 +234,15 @@ function App() {
 
   // Debounced lookup for olivo -> parcela
   useEffect(() => {
-    // Clear pending timer
     if (debounceRef.current) {
       clearTimeout(debounceRef.current);
     }
 
-    // If input empty, reset UI
     if (!olivo || olivo.trim() === '') {
       setStatus('idle');
       setParcelaNombre('');
       setParcelaId(null);
+      setParcelaPct(null);
       return;
     }
 
@@ -162,17 +250,38 @@ function App() {
     debounceRef.current = setTimeout(async () => {
       setStatus('loading');
       try {
-        const res = await fetch(`${apiBase}/olivos/${encodeURIComponent(olivo)}/parcela`, { headers: { ...authHeaders } });
-        if (!res.ok) {
+        let parcelaData = null;
+        if (isOnline) {
+          try {
+            const res = await fetch(`${apiBase}/olivos/${encodeURIComponent(olivo)}/parcela`, { headers: { ...authHeaders } });
+            if (res.ok) {
+              parcelaData = await res.json();
+            } else if (res.status === 404) {
+              parcelaData = null;
+            } else if (res.status === 401) {
+              throw new Error('No autenticado');
+            } else {
+              throw new Error('network');
+            }
+          } catch (err) {
+            if (typeof navigator !== 'undefined' && !navigator.onLine) {
+              parcelaData = null;
+            } else if (err.message === 'No autenticado') {
+              throw err;
+            }
+          }
+        }
+        if (!parcelaData) {
+          parcelaData = await offlineGetParcelaByOlivo(olivo);
+        }
+        if (!parcelaData) {
           throw new Error('No encontrado');
         }
-        const data = await res.json();
-        setParcelaNombre(data.nombre || '');
-        setParcelaId(data.id ?? null);
-        setParcelaPct(data.porcentaje ?? null);
+        setParcelaNombre(parcelaData.nombre || '');
+        setParcelaId(parcelaData.id ?? null);
+        setParcelaPct(parcelaData.porcentaje ?? null);
         setStatus('success');
-        // cargar listado de palots relacionados con la parcela
-        loadRelPalots(data.id ?? null);
+        loadRelPalots(parcelaData.id ?? null);
       } catch (err) {
         setParcelaNombre('');
         setParcelaId(null);
@@ -185,24 +294,31 @@ function App() {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [olivo]);
+  }, [olivo, isOnline, authToken]);
 
   
+
+  const refreshAllData = async () => {
+    const [relations, pending] = await Promise.all([
+      listRelations().catch(() => []),
+      getPendingOps().catch(() => []),
+    ]);
+    const rows = Array.isArray(relations) ? relations : [];
+    setAllRels(rows);
+    const map = new Map();
+    for (const r of rows) {
+      if (!map.has(r.palot_id)) map.set(r.palot_id, r.kgs == null ? '' : String(r.kgs));
+    }
+    setKgsDraft(Object.fromEntries(map));
+    setPendingCount(Array.isArray(pending) ? pending.length : 0);
+    return rows;
+  };
 
   const loadAllRels = async () => {
     setAllStatus('loading');
     try {
-      const res = await fetch(`${apiBase}/parcelas-palots`, { headers: { ...authHeaders } });
-      if (!res.ok) throw new Error('No se pudo cargar');
-      const data = await res.json();
-      setAllRels(Array.isArray(data) ? data : []);
+      await refreshAllData();
       setAllStatus('ready');
-      // seed kgs drafts por palot
-      const map = new Map();
-      for (const r of (Array.isArray(data) ? data : [])) {
-        if (!map.has(r.palot_id)) map.set(r.palot_id, r.kgs == null ? '' : String(r.kgs));
-      }
-      setKgsDraft(Object.fromEntries(map));
     } catch (e) {
       setAllStatus('error');
     }
@@ -216,9 +332,7 @@ function App() {
     }
     setRelStatus('loading');
     try {
-      const res = await fetch(`${apiBase}/parcelas/${pid}/palots`, { headers: { ...authHeaders } });
-      if (!res.ok) throw new Error('No se pudo cargar');
-      const data = await res.json();
+      const data = await listRelationsByParcela(pid);
       setRelPalots(Array.isArray(data) ? data : []);
       setRelStatus('ready');
     } catch (e) {
@@ -226,10 +340,69 @@ function App() {
     }
   };
 
+  const runSync = async ({ mode } = {}) => {
+    if (!authToken || syncingRef.current) return;
+    if (!isOnline) {
+      setSyncMessage('Sin conexión. No se puede sincronizar.');
+      if (syncTimeoutRef.current) {
+        clearTimeout(syncTimeoutRef.current);
+        syncTimeoutRef.current = null;
+      }
+      return;
+    }
+    syncingRef.current = true;
+    setSyncing(true);
+    if (syncTimeoutRef.current) {
+      clearTimeout(syncTimeoutRef.current);
+      syncTimeoutRef.current = null;
+    }
+    setSyncMessage('Sincronizando…');
+    try {
+      const headers = { Authorization: `Basic ${authToken}` };
+      if (mode === 'push') {
+        await syncUp(apiBase, headers);
+      } else if (mode === 'pull') {
+        await syncDown(apiBase, headers);
+      } else {
+        await syncAll(apiBase, headers);
+      }
+      await refreshAllData();
+      const stamp = new Date().toISOString();
+      setLastSync(stamp);
+      setSyncMessage('Sincronización completada.');
+      if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
+      syncTimeoutRef.current = setTimeout(() => setSyncMessage(''), 4000);
+    } catch (err) {
+      console.error('Sync error', err);
+      setSyncMessage('Error al sincronizar. Revisa la conexión.');
+      if (syncTimeoutRef.current) {
+        clearTimeout(syncTimeoutRef.current);
+        syncTimeoutRef.current = null;
+      }
+    } finally {
+      syncingRef.current = false;
+      setSyncing(false);
+    }
+  };
+
+  const formatDateTime = (iso) => {
+    if (!iso) return '';
+    try {
+      return new Date(iso).toLocaleString();
+    } catch (_) {
+      return iso;
+    }
+  };
+
   // Cargar todas las relaciones al montar (solo con sesión)
   useEffect(() => {
-    if (authToken) loadAllRels();
-  }, [authToken]);
+    if (authToken && offlineReady) loadAllRels();
+  }, [authToken, offlineReady]);
+
+  useEffect(() => {
+    if (!authToken || !isOnline || !offlineReady) return;
+    runSync();
+  }, [authToken, isOnline, offlineReady]);
 
   const handleSave = async () => {
     setMessage('');
@@ -244,38 +417,85 @@ function App() {
       return;
     }
     setSaveStatus('saving');
+    const palotCode = String(palot).trim();
+    const parcelaInfo = await getParcelaById(parcelaId).catch(() => null);
+
+    const saveOffline = async (msg) => {
+      const existingPalot = await getPalotByCodigo(palotCode).catch(() => null);
+      if (!existingPalot || existingPalot.source !== 'server') {
+        await enqueueEnsurePalot(palotCode);
+      }
+      await enqueueRelation({
+        parcela_id: parcelaId,
+        palot_codigo: palotCode,
+        parcela_nombre: parcelaInfo?.nombre || parcelaNombre || '',
+        parcela_variedad: parcelaInfo?.variedad || '',
+        parcela_porcentaje: parcelaInfo?.porcentaje ?? parcelaPct ?? null,
+        parcela_nombre_interno: parcelaInfo?.nombre_interno || '',
+        sigpac_municipio: parcelaInfo?.sigpac_municipio || '',
+        sigpac_poligono: parcelaInfo?.sigpac_poligono || '',
+        sigpac_parcela: parcelaInfo?.sigpac_parcela || '',
+        sigpac_recinto: parcelaInfo?.sigpac_recinto || '',
+        created_at: new Date().toISOString(),
+      });
+      await refreshAllData();
+      await loadRelPalots(parcelaId);
+      setSaveStatus('ok');
+      setMessage(msg || 'Guardado sin conexión. Se sincronizará al recuperar la red.');
+      setPalot('');
+      setOlivo('');
+      setParcelaNombre('');
+      setParcelaId(null);
+      setParcelaPct(null);
+      setStatus('idle');
+    };
+
     try {
-      // 1) Intentar resolver palot_id a partir del código introducido
+      if (!isOnline) {
+        await saveOffline('Guardado sin conexión. Se sincronizará al recuperar la red.');
+        return;
+      }
       const listRes = await fetch(`${apiBase}/palots`, { headers: { ...authHeaders } });
+      if (listRes.status === 401) {
+        const err = new Error('No autenticado');
+        err.status = 401;
+        throw err;
+      }
       const palots = listRes.ok ? await listRes.json() : [];
-      let palotRow = palots.find(p => String(p.codigo) === String(palot).trim());
+      let palotRow = palots.find(p => String(p.codigo) === palotCode);
       if (!palotRow) {
-        // 2) Si no existe, crearlo
         const createRes = await fetch(`${apiBase}/palots`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...authHeaders },
-          body: JSON.stringify({ codigo: String(palot).trim() })
+          body: JSON.stringify({ codigo: palotCode })
         });
+        if (createRes.status === 401) {
+          const err = new Error('No autenticado');
+          err.status = 401;
+          throw err;
+        }
         if (!createRes.ok) throw new Error('No se pudo crear el palot');
         palotRow = await createRes.json();
       }
 
-      // 3) Guardar relación parcela–palot
       const relRes = await fetch(`${apiBase}/parcelas/${parcelaId}/palots`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({ palot_id: palotRow.id })
       });
+      if (relRes.status === 401) {
+        const err = new Error('No autenticado');
+        err.status = 401;
+        throw err;
+      }
       if (!relRes.ok) {
-        const err = await relRes.json().catch(() => ({}));
-        throw new Error(err.error || 'No se pudo guardar la relación');
+        const errBody = await relRes.json().catch(() => ({}));
+        throw new Error(errBody.error || 'No se pudo guardar la relación');
       }
       setSaveStatus('ok');
       setMessage('Relación guardada correctamente.');
-      // refrescar listado de relaciones
-      loadRelPalots(parcelaId);
-      loadAllRels();
-      // limpiar campos e indicadores
+      await runSync({ mode: 'pull' });
+      await loadRelPalots(parcelaId);
       setPalot('');
       setOlivo('');
       setParcelaNombre('');
@@ -283,14 +503,19 @@ function App() {
       setParcelaPct(null);
       setStatus('idle');
     } catch (e) {
+      if (!isOnline || e.name === 'TypeError' || e.message === 'Failed to fetch' || e.message === 'network') {
+        await saveOffline('Guardado sin conexión. Se sincronizará al recuperar la red.');
+        return;
+      }
       setSaveStatus('fail');
-      if (e.message && e.message.includes('401')) {
+      if (e.status === 401 || (e.message && e.message.includes('401'))) {
         setMessage('No autenticado. Inicia sesión.');
       } else {
         setMessage(e.message || 'Error al guardar.');
       }
     }
   };
+
 
   const canSave = status === 'success' && !!parcelaId && String(palot).trim() !== '' && saveStatus !== 'saving';
 
@@ -340,6 +565,13 @@ function App() {
     // Keep deterministic order: by palot code asc
     return Array.from(map.values()).sort((a, b) => String(a.palot_codigo).localeCompare(String(b.palot_codigo)));
   }, [relsByTab, relTab]);
+
+  const syncStatusClass = React.useMemo(() => {
+    if (!syncMessage) return 'state muted';
+    if (syncMessage.includes('completada')) return 'state ok';
+    if (syncMessage.includes('Sincronizando')) return 'state muted';
+    return 'state error';
+  }, [syncMessage]);
 
   const exportCsv = () => {
     // Columnas: codigo_palot, id_parcela, nombre_parcela, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, variedad
@@ -467,6 +699,34 @@ function App() {
         <>
       <div className="card grid">
 
+        <div className="controls" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
+          <span className={`state ${isOnline ? 'ok' : 'error'}`}>
+            {isOnline ? 'Modo en línea' : 'Sin conexión: modo offline'}
+          </span>
+          {pendingCount > 0 && (
+            <span className="pill danger" style={{ background: '#f97316', borderColor: '#f97316' }}>
+              Pendientes por sincronizar: {pendingCount}
+            </span>
+          )}
+          {lastSync && (
+            <span className="muted" style={{ fontSize: '0.85rem' }}>
+              Última sincronización: {formatDateTime(lastSync)}
+            </span>
+          )}
+          <button
+            className={syncing ? 'btn' : 'btn btn-outline'}
+            onClick={() => runSync()}
+            disabled={syncing}
+          >
+            {syncing ? 'Sincronizando…' : 'Sincronizar'}
+          </button>
+        </div>
+        {syncMessage && (
+          <span className={syncStatusClass} style={{ marginTop: '-0.25rem' }}>
+            {syncMessage}
+          </span>
+        )}
+
         <div className="row">
           <label>Introduce nº de olivo</label>
           <input
@@ -560,7 +820,14 @@ function App() {
                   </div>
                   <div className="cell-details">
                     {g.items.map((r) => (
-                      <div key={r.id} className="kv" onClick={() => setExpandedId(expandedId === r.id ? null : r.id)}>
+                      <div
+                        key={r.id}
+                        className={`kv ${r.pending ? 'kv-pending-card' : ''}`}
+                        onClick={() => setExpandedId(expandedId === r.id ? null : r.id)}
+                      >
+                        {r.pending && (
+                          <span className="kv-pending" style={{ gridColumn: '1 / -1' }}>Pendiente de sincronización</span>
+                        )}
                         <span className="kv-label">Parcela</span><span className="kv-value">{r.parcela_nombre || '-'}</span>
                         <span className="kv-label">Creado por</span><span className="kv-value">{r.created_by_username || r.created_by || '-'}</span>
                         <span className="kv-label">Fecha</span><span className="kv-value">{r.created_at ? new Date(r.created_at).toLocaleString() : '-'}</span>

@@ -168,6 +168,29 @@ input:focus {
   position: relative;
   cursor: pointer;
 }
+.kv-pending {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.35rem;
+  background: #fff7ed;
+  color: #c2410c;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.2rem 0.65rem;
+}
+
+.kv.kv-pending-card {
+  border-color: #fb923c;
+  background: #fff7ed;
+}
+
+.kv.kv-pending-card::before {
+  background: #fb923c;
+  opacity: 0.45;
+}
+
 .cell-details .kv + .kv { margin-top: 0.5rem; }
 .cell-details .kv:nth-child(odd) { background: #f8faf8; }
 .kv::before {

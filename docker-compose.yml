@@ -23,14 +23,14 @@ services:
         BUILD_TIME: ${BUILD_TIME-}
     restart: unless-stopped
     ports:
-      # Limitar a loopback por defecto; configurable vía BACKEND_PORT
+      # Bind to loopback by default; adjust via BACKEND_PORT
       - "${BACKEND_HOST_BIND:-127.0.0.1}:${BACKEND_PORT:-3000}:3000"
     environment:
       NODE_ENV: production
       PORT: 3000
-      # Conectar al servicio db
+      # Connect to db service
       DATABASE_URL: postgres://${POSTGRES_USER:-trazo}:${POSTGRES_PASSWORD:-trazo}@db:5432/${POSTGRES_DB:-trazoliva}
-      # Admin inicial (opcional)
+      # Seed admin credentials (optional)
       ADMIN_USER: ${ADMIN_USER:-admin}
       ADMIN_PASS: ${ADMIN_PASS:-admin}
     depends_on:
@@ -42,8 +42,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        # Si quieres forzar una URL absoluta en el build, define VITE_API_URL.
-        # Recomendado dejar vacío y usar el proxy /api del Nginx.
+        # Keep empty to rely on nginx proxy /api
         VITE_API_URL: ${VITE_API_URL-}
     restart: unless-stopped
     ports:

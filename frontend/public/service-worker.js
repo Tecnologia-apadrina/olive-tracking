@@ -2,6 +2,23 @@
 const CACHE_NAME = 'olive-tracking-offline-v3';
 const CORE = ['/', '/index.html', '/manifest.json', '/icon.svg'];
 
+function isHttp(url) {
+  return url.protocol === 'http:' || url.protocol === 'https:';
+}
+
+async function putIfHttpOk(cache, request, response) {
+  if (!response || !response.ok) return;
+  try {
+    const url = new URL(request.url);
+    if (!isHttp(url)) return;
+  } catch (_) {
+    return;
+  }
+  try {
+    await cache.put(request, response.clone());
+  } catch (_) {}
+}
+
 self.addEventListener('install', (event) => {
   event.waitUntil(
     (async () => {
@@ -32,13 +49,20 @@ self.addEventListener('fetch', (event) => {
   if (req.method !== 'GET') return;
 
   const url = new URL(req.url);
+  if (!isHttp(url)) return;
   const isHTML = req.mode === 'navigate' || (req.headers.get('accept') || '').includes('text/html');
   const isAsset = url.pathname.startsWith('/assets/');
   const isApi = url.pathname.startsWith('/api/');
 
   // No cache para API protegida; requiere estar online y autenticado
   if (isApi) {
-    event.respondWith(fetch(req));
+    event.respondWith((async () => {
+      try {
+        return await fetch(req);
+      } catch (_) {
+        return new Response('', { status: 503, statusText: 'Offline' });
+      }
+    })());
     return;
   }
 
@@ -49,7 +73,7 @@ self.addEventListener('fetch', (event) => {
           const fresh = await fetch(req);
           const cache = await caches.open(CACHE_NAME);
           // Mantener index.html actualizado
-          cache.put('/index.html', fresh.clone());
+          await cache.put('/index.html', fresh.clone());
           return fresh;
         } catch (_) {
           const cached = await caches.match('/index.html');
@@ -67,14 +91,14 @@ self.addEventListener('fetch', (event) => {
         const cached = await cache.match(req);
         if (cached) {
           // Actualizar en background
-          fetch(req).then((res) => {
-            if (res && res.ok) cache.put(req, res.clone());
+          fetch(req).then(async (res) => {
+            if (res && res.ok) await putIfHttpOk(cache, req, res);
           }).catch(() => {});
           return cached;
         }
         try {
           const res = await fetch(req);
-          if (res && res.ok) cache.put(req, res.clone());
+          if (res && res.ok) await putIfHttpOk(cache, req, res);
           return res;
         } catch (e) {
           return new Response('', { status: 504, statusText: 'Asset unavailable offline' });
@@ -92,7 +116,7 @@ self.addEventListener('fetch', (event) => {
       if (cached) return cached;
       try {
         const res = await fetch(req);
-        if (res && res.ok) cache.put(req, res.clone());
+        if (res && res.ok) await putIfHttpOk(cache, req, res);
         return res;
       } catch (_) {
         return new Response('', { status: 504, statusText: 'Offline' });
