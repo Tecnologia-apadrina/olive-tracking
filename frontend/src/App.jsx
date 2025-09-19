@@ -47,6 +47,7 @@ function App() {
   const [loginBusy, setLoginBusy] = useState(false);
 
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+  const [parcelaWarning, setParcelaWarning] = useState('');
   const [pendingCount, setPendingCount] = useState(0);
   const [lastSync, setLastSync] = useState(null);
   const [offlineReady, setOfflineReady] = useState(false);
@@ -340,6 +341,15 @@ function App() {
     }
   };
 
+  useEffect(() => {
+    if (!parcelaId) {
+      setParcelaWarning('');
+      return;
+    }
+    const alreadyUsed = Array.isArray(allRels) && allRels.some(r => Number(r.parcela_id) === Number(parcelaId));
+    setParcelaWarning(alreadyUsed ? 'Advertencia: la parcela ya tiene relaciones registradas.' : '');
+  }, [parcelaId, allRels]);
+
   const runSync = async ({ mode } = {}) => {
     if (!authToken || syncingRef.current) return;
     if (!isOnline) {
@@ -403,6 +413,44 @@ function App() {
     if (!authToken || !isOnline || !offlineReady) return;
     runSync();
   }, [authToken, isOnline, offlineReady]);
+
+  const handleDeleteRelation = async (relation) => {
+    if (!relation) return;
+    if (!window.confirm('¿Eliminar la relación parcela-palot?')) return;
+    if (!isOnline) {
+      setSyncMessage('Sin conexión. No se puede eliminar la relación.');
+      if (syncTimeoutRef.current) {
+        clearTimeout(syncTimeoutRef.current);
+        syncTimeoutRef.current = null;
+      }
+      return;
+    }
+    try {
+      if (syncTimeoutRef.current) {
+        clearTimeout(syncTimeoutRef.current);
+        syncTimeoutRef.current = null;
+      }
+      setSyncMessage('Eliminando relación…');
+      const res = await fetch(`${apiBase}/parcelas/${relation.parcela_id}/palots/${relation.palot_id}`, {
+        method: 'DELETE',
+        headers: { ...authHeaders },
+      });
+      if (res.status !== 204) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error || 'No se pudo eliminar la relación');
+      }
+      await runSync({ mode: 'pull' });
+      setSyncMessage('Relación eliminada.');
+      syncTimeoutRef.current = setTimeout(() => setSyncMessage(''), 4000);
+    } catch (err) {
+      console.error('Delete relation error', err);
+      if (syncTimeoutRef.current) {
+        clearTimeout(syncTimeoutRef.current);
+        syncTimeoutRef.current = null;
+      }
+      setSyncMessage(err?.message ? `Error al eliminar: ${err.message}` : 'Error al eliminar la relación.');
+    }
+  };
 
   const handleSave = async () => {
     setMessage('');
@@ -575,8 +623,8 @@ function App() {
   }, [syncMessage]);
 
   const exportCsv = () => {
-    // Columnas: codigo_palot, id_parcela, nombre_parcela, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, variedad
-    const header = ['codigo_palot', 'id_parcela', 'nombre_parcela', 'sigpac_municipio', 'sigpac_poligono', 'sigpac_parcela', 'sigpac_recinto', 'variedad'];
+    // Columnas: codigo_palot, id_parcela, nombre_parcela, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, parcela_variedad, fecha_creacion, creado_por
+    const header = ['codigo_palot', 'id_parcela', 'nombre_parcela', 'sigpac_municipio', 'sigpac_poligono', 'sigpac_parcela', 'sigpac_recinto', 'parcela_variedad', 'fecha_creacion', 'creado_por'];
     const escape = (v) => '"' + String(v ?? '').replaceAll('"', '""') + '"';
     const base = relTab === 'today' ? relsByTab.today : relsByTab.prev;
     const rows = (base || []).map(r => [
@@ -587,7 +635,9 @@ function App() {
       r.sigpac_poligono || '',
       r.sigpac_parcela || '',
       r.sigpac_recinto || '',
-      r.parcela_variedad || ''
+      r.parcela_variedad || '',
+      r.created_at ? new Date(r.created_at).toISOString() : '',
+      r.created_by_username || r.created_by || ''
     ]);
     const csv = [header.join(','), ...rows.map(r => r.map(escape).join(','))].join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -765,6 +815,9 @@ function App() {
               {message}
             </span>
           )}
+          {parcelaWarning && (
+            <span className="state warning">{parcelaWarning}</span>
+          )}
         </div>
       </div>
 
@@ -838,6 +891,14 @@ function App() {
                         <span className="kv-label">Parcela</span><span className="kv-value">{r.parcela_nombre || '-'}</span>
                         <span className="kv-label">Creado por</span><span className="kv-value">{r.created_by_username || r.created_by || '-'}</span>
                         <span className="kv-label">Fecha</span><span className="kv-value">{r.created_at ? new Date(r.created_at).toLocaleString() : '-'}</span>
+                        <button
+                          className="cell-close"
+                          onClick={(event) => { event.stopPropagation(); handleDeleteRelation(r); }}
+                          disabled={!isOnline || syncing}
+                          aria-label="Eliminar relación"
+                        >
+                          ×
+                        </button>
                         {expandedId === r.id && (
                           <>
                             <span className="kv-label">Municipio</span><span className="kv-value">{r.sigpac_municipio || '-'}</span>
