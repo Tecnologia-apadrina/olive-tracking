@@ -111,7 +111,11 @@ input:focus {
 .state { font-size: 0.9rem; }
 .state.error { color: var(--danger); }
 .state.ok { color: var(--accent-600); }
-.state.warning { color: #d97706; }
+.state.warning { border: 1px solid red;
+    padding: 5px;
+    border-radius: 10px;
+    color: white;
+    background-color: red; }
 
 .divider { height: 1px; background: var(--border); margin: 0.75rem 0; }
 
@@ -158,9 +162,23 @@ input:focus {
 }
 .cell { cursor: pointer; transition: border-color 0.15s ease, box-shadow 0.15s ease; }
 .cell:hover { border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring); }
-.cell-title { font-weight: 700; color: var(--accent-600); }
+.cell-title { font-weight: 700; color: var(--accent-600); display: flex; align-items: center; gap: 0.5rem; }
+.cell-title-text { flex: 1; display: inline-flex; align-items: baseline; gap: 0.25rem; color: inherit; }
 .cell-sub { color: var(--text); }
 .cell-meta { color: var(--muted); font-size: 0.86rem; }
+.collapse-toggle {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.9rem;
+  padding: 0.2rem 0.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.collapse-toggle:hover { color: var(--accent-600); }
+.cell-collapsed { cursor: default; }
 
 .cell-details { margin-top: 0.4rem; padding-top: 0.5rem; border-top: 1px dashed var(--border); display: grid; gap: 0.25rem; }
 .kv { 
@@ -278,6 +296,7 @@ input:focus {
   .kg-input { max-width: 100%; }
 }
 .tabs { display: inline-flex; gap: 0.4rem; margin-right: 0.5rem; }
+.export-group { display: inline-flex; gap: 0.35rem; }
 
 /* Inline kgs editor */
 .cell-inline { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.25rem; }

@@ -21,7 +21,7 @@ router.get('/sync/snapshot', async (req, res) => {
                              par.nombre_interno AS parcela_nombre_interno,
                              p.id     AS palot_id,
                              p.codigo AS palot_codigo,
-                             COALESCE(p.kgs, pp.kgs)   AS kgs,
+                             pp.kgs   AS kgs,
                              pp.id_usuario AS created_by,
                              u.username AS created_by_username,
                              pp.created_at AS created_at

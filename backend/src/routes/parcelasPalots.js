@@ -15,13 +15,6 @@ router.post('/parcelas/:parcelaId/palots', async (req, res) => {
     'INSERT INTO parcelas_palots(id_parcela, id_palot, id_usuario, kgs) VALUES($1, $2, $3, $4) RETURNING *',
     [parcelaId, palot_id, userId, kgs ?? null]
   );
-  // If kgs provided, reflect it as palot-level value
-  if (kgs !== undefined && kgs !== null && String(kgs).trim() !== '') {
-    const num = Number(kgs);
-    if (!Number.isNaN(num)) {
-      await db.public.none('UPDATE palots SET kgs = $1 WHERE id = $2', [num, palot_id]);
-    }
-  }
   res.status(201).json(result);
 });
 
@@ -68,7 +61,7 @@ router.get('/parcelas-palots', async (req, res) => {
               par.nombre_interno AS parcela_nombre_interno,
               p.id     AS palot_id,
               p.codigo AS palot_codigo,
-              COALESCE(p.kgs, pp.kgs)   AS kgs,
+              pp.kgs   AS kgs,
               pp.id_usuario AS created_by,
               u.username AS created_by_username,
               pp.created_at AS created_at
@@ -99,15 +92,9 @@ router.patch('/parcelas-palots/:id', async (req, res) => {
     value = num;
   }
   try {
-    // Find the palot for this relation
-    const rel = await db.public.one('SELECT id_palot FROM parcelas_palots WHERE id = $1', [id]);
-    await db.public.none('UPDATE palots SET kgs = $1 WHERE id = $2', [value, rel.id_palot]);
-    // Return the relation row (no real change there) plus new kgs as convenience
     const updated = await db.public.one(
-      `SELECT pp.*, COALESCE(p.kgs, pp.kgs) AS kgs
-         FROM parcelas_palots pp JOIN palots p ON p.id = pp.id_palot
-        WHERE pp.id = $1`,
-      [id]
+      'UPDATE parcelas_palots SET kgs = $2 WHERE id = $1 RETURNING *',
+      [id, value]
     );
     res.json(updated);
   } catch (e) {

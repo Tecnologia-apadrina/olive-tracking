@@ -25,6 +25,7 @@ function App() {
   const [authRole, setAuthRole] = useState('');
   const [view, setView] = useState('main'); // main | users | olivos | parcelas | palots
   const [palot, setPalot] = useState('');
+  const [palotKgs, setPalotKgs] = useState('');
   const [olivo, setOlivo] = useState('');
   const [parcelaNombre, setParcelaNombre] = useState('');
   const [parcelaId, setParcelaId] = useState(null);
@@ -38,8 +39,9 @@ function App() {
   const [expandedId, setExpandedId] = useState(null);
   const [relPalots, setRelPalots] = useState([]);
   const [relStatus, setRelStatus] = useState('idle'); // idle | loading | ready | error
-  const [kgsDraft, setKgsDraft] = useState({}); // { [palotId]: string }
-  const [kgSaveStatus, setKgSaveStatus] = useState({}); // { [palotId]: 'idle'|'saving'|'ok'|'error' }
+  const [kgsDraft, setKgsDraft] = useState({}); // { [relationKey]: string }
+  const [kgSaveStatus, setKgSaveStatus] = useState({}); // { [relationKey]: 'idle'|'saving'|'ok'|'error' }
+  const [collapsedPalots, setCollapsedPalots] = useState({}); // { [palotId]: boolean }
   const debounceRef = useRef(null);
   const [appVersion, setAppVersion] = useState('');
   const [dbUrl, setDbUrl] = useState('');
@@ -213,6 +215,9 @@ function App() {
     setParcelaNombre('');
     setParcelaId(null);
     setParcelaPct(null);
+    setPalotKgs('');
+    setKgsDraft({});
+    setKgSaveStatus({});
     try {
       localStorage.removeItem('authToken');
       localStorage.removeItem('authUser');
@@ -244,6 +249,7 @@ function App() {
       setParcelaNombre('');
       setParcelaId(null);
       setParcelaPct(null);
+      setPalotKgs('');
       return;
     }
 
@@ -281,12 +287,14 @@ function App() {
         setParcelaNombre(parcelaData.nombre || '');
         setParcelaId(parcelaData.id ?? null);
         setParcelaPct(parcelaData.porcentaje ?? null);
+        setPalotKgs('');
         setStatus('success');
         loadRelPalots(parcelaData.id ?? null);
       } catch (err) {
         setParcelaNombre('');
         setParcelaId(null);
         setParcelaPct(null);
+        setPalotKgs('');
         setStatus('error');
         loadRelPalots(null);
       }
@@ -308,9 +316,12 @@ function App() {
     setAllRels(rows);
     const map = new Map();
     for (const r of rows) {
-      if (!map.has(r.palot_id)) map.set(r.palot_id, r.kgs == null ? '' : String(r.kgs));
+      const key = getRelationKey(r);
+      if (!key || map.has(key)) continue;
+      map.set(key, r.kgs == null ? '' : String(r.kgs));
     }
     setKgsDraft(Object.fromEntries(map));
+    setKgSaveStatus({});
     setPendingCount(Array.isArray(pending) ? pending.length : 0);
     return rows;
   };
@@ -340,15 +351,6 @@ function App() {
       setRelStatus('error');
     }
   };
-
-  useEffect(() => {
-    if (!parcelaId) {
-      setParcelaWarning('');
-      return;
-    }
-    const alreadyUsed = Array.isArray(allRels) && allRels.some(r => Number(r.parcela_id) === Number(parcelaId));
-    setParcelaWarning(alreadyUsed ? 'Advertencia: la parcela ya tiene relaciones registradas.' : '');
-  }, [parcelaId, allRels]);
 
   const runSync = async ({ mode } = {}) => {
     if (!authToken || syncingRef.current) return;
@@ -452,6 +454,32 @@ function App() {
     }
   };
 
+  const getRelationKey = (relation) => {
+    if (!relation) return '';
+    if (relation.id !== undefined && relation.id !== null) return String(relation.id);
+    if (relation.key) return String(relation.key);
+    return `${relation.parcela_id ?? 'p'}-${relation.palot_id ?? 'palot'}-${relation.created_at ?? 'unknown'}`;
+  };
+
+  const parseKgsInput = (value) => {
+    if (value === undefined || value === null) {
+      return { hasValue: false, value: null, valid: true };
+    }
+    const normalized = String(value).replace(',', '.').trim();
+    if (normalized === '') {
+      return { hasValue: false, value: null, valid: true };
+    }
+    const num = Number(normalized);
+    if (Number.isNaN(num)) {
+      return { hasValue: true, value: null, valid: false };
+    }
+    return { hasValue: true, value: num, valid: true };
+  };
+
+  const togglePalotCollapse = (palotId) => {
+    setCollapsedPalots((prev) => ({ ...prev, [palotId]: !prev[palotId] }));
+  };
+
   const handleSave = async () => {
     setMessage('');
     if (!parcelaId) {
@@ -459,14 +487,45 @@ function App() {
       setMessage('Primero busca un olivo válido para obtener su parcela.');
       return;
     }
-    if (!palot || String(palot).trim() === '') {
+    const palotCode = String(palot ?? '').trim();
+    if (palotCode === '') {
       setSaveStatus('fail');
       setMessage('Introduce un número de palot.');
       return;
     }
-    setSaveStatus('saving');
-    const palotCode = String(palot).trim();
+
     const parcelaInfo = await getParcelaById(parcelaId).catch(() => null);
+    const parcelaPercent = parcelaInfo?.porcentaje ?? parcelaPct;
+    const hasPct = parcelaPercent != null && parcelaPercent !== '' && !Number.isNaN(Number(parcelaPercent)) && Number(parcelaPercent) > 0;
+    const rawKgsInput = hasPct ? palotKgs : '';
+    const parsedKgs = parseKgsInput(rawKgsInput);
+    let normalizedKgs = null;
+
+    if (hasPct) {
+      if (!parsedKgs.hasValue) {
+        const confirmed = typeof window === 'undefined' ? true : window.confirm('La parcela tiene porcentaje y no has introducido los kgs. ¿Quieres continuar sin registrarlos?');
+        if (!confirmed) {
+          setSaveStatus('idle');
+          setMessage('Introduce los kgs para continuar o confirma que deseas omitirlos.');
+          return;
+        }
+      } else if (!parsedKgs.valid) {
+        setSaveStatus('fail');
+        setMessage('Introduce un valor numérico en Kgs.');
+        return;
+      } else {
+        normalizedKgs = parsedKgs.value;
+      }
+    } else if (parsedKgs.hasValue) {
+      if (!parsedKgs.valid) {
+        setSaveStatus('fail');
+        setMessage('Introduce un valor numérico en Kgs.');
+        return;
+      }
+      normalizedKgs = parsedKgs.value;
+    }
+
+    setSaveStatus('saving');
 
     const saveOffline = async (msg) => {
       const existingPalot = await getPalotByCodigo(palotCode).catch(() => null);
@@ -484,6 +543,7 @@ function App() {
         sigpac_poligono: parcelaInfo?.sigpac_poligono || '',
         sigpac_parcela: parcelaInfo?.sigpac_parcela || '',
         sigpac_recinto: parcelaInfo?.sigpac_recinto || '',
+        kgs: normalizedKgs,
         created_at: new Date().toISOString(),
       });
       await refreshAllData();
@@ -495,6 +555,7 @@ function App() {
       setParcelaNombre('');
       setParcelaId(null);
       setParcelaPct(null);
+      setPalotKgs('');
       setStatus('idle');
     };
 
@@ -529,7 +590,7 @@ function App() {
       const relRes = await fetch(`${apiBase}/parcelas/${parcelaId}/palots`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders },
-        body: JSON.stringify({ palot_id: palotRow.id })
+        body: JSON.stringify({ palot_id: palotRow.id, kgs: normalizedKgs })
       });
       if (relRes.status === 401) {
         const err = new Error('No autenticado');
@@ -549,6 +610,7 @@ function App() {
       setParcelaNombre('');
       setParcelaId(null);
       setParcelaPct(null);
+      setPalotKgs('');
       setStatus('idle');
     } catch (e) {
       if (!isOnline || e.name === 'TypeError' || e.message === 'Failed to fetch' || e.message === 'network') {
@@ -579,6 +641,20 @@ function App() {
     };
   const todayKey = dateKeyLocal(new Date());
 
+  useEffect(() => {
+    if (!parcelaId) {
+      setParcelaWarning('');
+      setPalotKgs('');
+      return;
+    }
+    const hasRelationToday = Array.isArray(allRels) && allRels.some((r) => {
+      if (Number(r.parcela_id) !== Number(parcelaId)) return false;
+      if (!r.created_at) return false;
+      return dateKeyLocal(r.created_at) === todayKey;
+    });
+    setParcelaWarning(hasRelationToday ? 'Advertencia: la parcela ya tiene relaciones registradas hoy.' : '');
+  }, [parcelaId, allRels, todayKey]);
+
   // Lista a mostrar según filtro de palot, ordenada por fecha creación desc
   const relsToShow = (allRels || [])
     .filter((r) => String(r.palot_codigo || '').toLowerCase().includes(String(filterPalot || '').trim().toLowerCase()))
@@ -602,13 +678,12 @@ function App() {
   // Agrupar por palot
   const palotGroups = React.useMemo(() => {
     const base = relTab === 'today' ? relsByTab.today : relsByTab.prev;
-    const map = new Map(); // palot_id -> { palot_id, palot_codigo, kgs, items: [], hasPct: boolean }
+    const map = new Map(); // palot_id -> { palot_id, palot_codigo, items: [], hasPct: boolean }
     for (const r of base) {
       const key = r.palot_id;
-      if (!map.has(key)) map.set(key, { palot_id: r.palot_id, palot_codigo: r.palot_codigo, kgs: r.kgs ?? null, items: [], hasPct: false });
+      if (!map.has(key)) map.set(key, { palot_id: r.palot_id, palot_codigo: r.palot_codigo, items: [], hasPct: false });
       const g = map.get(key);
       g.items.push(r);
-      if (g.kgs == null && r.kgs != null) g.kgs = r.kgs;
       if (!g.hasPct && r.parcela_porcentaje != null && Number(r.parcela_porcentaje) > 0) g.hasPct = true;
     }
     // Keep deterministic order: by palot code asc
@@ -622,12 +697,14 @@ function App() {
     return 'state error';
   }, [syncMessage]);
 
-  const exportCsv = () => {
-    // Columnas: codigo_palot, id_parcela, nombre_parcela, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, parcela_variedad, fecha_creacion, creado_por
-    const header = ['codigo_palot', 'id_parcela', 'nombre_parcela', 'sigpac_municipio', 'sigpac_poligono', 'sigpac_parcela', 'sigpac_recinto', 'parcela_variedad', 'fecha_creacion', 'creado_por'];
+  const parcelaHasPct = parcelaPct != null && parcelaPct !== '' && !Number.isNaN(Number(parcelaPct)) && Number(parcelaPct) > 0;
+
+  const exportCsv = (mode) => {
+    // Columnas: codigo_palot, id_parcela, nombre_parcela, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, parcela_variedad, parcela_porcentaje, kgs, fecha_creacion, creado_por
+    const header = ['codigo_palot', 'id_parcela', 'nombre_parcela', 'sigpac_municipio', 'sigpac_poligono', 'sigpac_parcela', 'sigpac_recinto', 'parcela_variedad', 'parcela_porcentaje', 'kgs', 'fecha_creacion', 'creado_por'];
     const escape = (v) => '"' + String(v ?? '').replaceAll('"', '""') + '"';
-    const base = relTab === 'today' ? relsByTab.today : relsByTab.prev;
-    const rows = (base || []).map(r => [
+    const source = mode === 'today' ? relsByTab.today : allRels;
+    const rows = (source || []).map(r => [
       r.palot_codigo,
       r.parcela_id,
       r.parcela_nombre || '',
@@ -636,6 +713,8 @@ function App() {
       r.sigpac_parcela || '',
       r.sigpac_recinto || '',
       r.parcela_variedad || '',
+      r.parcela_porcentaje != null ? r.parcela_porcentaje : '',
+      r.kgs != null ? r.kgs : '',
       r.created_at ? new Date(r.created_at).toISOString() : '',
       r.created_by_username || r.created_by || ''
     ]);
@@ -644,34 +723,50 @@ function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'relaciones_parcela_palot.csv';
+    a.download = mode === 'today' ? 'relaciones_parcela_palot_hoy.csv' : 'relaciones_parcela_palot_general.csv';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
 
-  const handleKgsBlur = async (palotId, relId) => {
-    const value = kgsDraft[palotId];
-    setKgSaveStatus(s => ({ ...s, [palotId]: 'saving' }));
+  const handleKgsBlur = async (relation) => {
+    const relKey = getRelationKey(relation);
+    if (!relKey) return;
+    const draftValue = kgsDraft[relKey] ?? '';
+    const parsed = parseKgsInput(draftValue);
+    if (parsed.hasValue && !parsed.valid) {
+      setKgSaveStatus((s) => ({ ...s, [relKey]: 'error' }));
+      return;
+    }
+
+    const newVal = parsed.hasValue && parsed.valid ? parsed.value : null;
+    const nextDraftValue = parsed.hasValue && parsed.valid ? String(parsed.value) : '';
+    const numericId = Number(relation?.id);
+    if (Number.isNaN(numericId)) return;
+
+    const existingVal = relation?.kgs == null ? null : Number(relation.kgs);
+    if ((!parsed.hasValue && existingVal == null) || (parsed.hasValue && parsed.valid && existingVal === newVal)) {
+      setKgsDraft((s) => ({ ...s, [relKey]: nextDraftValue }));
+      setKgSaveStatus((s) => ({ ...s, [relKey]: 'idle' }));
+      return;
+    }
+
+    setKgSaveStatus((s) => ({ ...s, [relKey]: 'saving' }));
     try {
-      const res = await fetch(`${apiBase}/parcelas-palots/${relId}`, {
+      const res = await fetch(`${apiBase}/parcelas-palots/${numericId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', ...authHeaders },
-        body: JSON.stringify({ kgs: value === '' ? null : value })
+        body: JSON.stringify({ kgs: newVal })
       });
       if (!res.ok) throw new Error('No se pudo guardar');
-      setKgSaveStatus(s => ({ ...s, [palotId]: 'ok' }));
-      // refresh all relations with same palot to keep kgs consistent
-      setAllRels(rows => {
-        const pid = palotId;
-        const newVal = value === '' ? null : Number(value);
-        return rows.map(r => (pid && r.palot_id === pid) ? { ...r, kgs: newVal } : r);
-      });
-      // reset indicator after a moment
-      setTimeout(() => setKgSaveStatus(s => ({ ...s, [palotId]: 'idle' })), 1200);
+      setKgsDraft((s) => ({ ...s, [relKey]: nextDraftValue }));
+      setKgSaveStatus((s) => ({ ...s, [relKey]: 'ok' }));
+      setAllRels((rows) => rows.map((r) => (getRelationKey(r) === relKey ? { ...r, kgs: newVal } : r)));
+      setRelPalots((rows) => rows.map((r) => (getRelationKey(r) === relKey ? { ...r, kgs: newVal } : r)));
+      setTimeout(() => setKgSaveStatus((s) => ({ ...s, [relKey]: 'idle' })), 1200);
     } catch (e) {
-      setKgSaveStatus(s => ({ ...s, [palotId]: 'error' }));
+      setKgSaveStatus((s) => ({ ...s, [relKey]: 'error' }));
     }
   };
 
@@ -806,6 +901,19 @@ function App() {
           <input value={palot} onChange={e => setPalot(e.target.value)} placeholder="Ej. 42" inputMode="numeric" />
         </div>
 
+        {parcelaHasPct && (
+          <div className="row">
+            <label>Introduce los kgs para esta parcela cedente</label>
+            <input
+              value={palotKgs}
+              onChange={(e) => setPalotKgs(e.target.value)}
+              placeholder="Ej. 1200"
+              inputMode="decimal"
+            />
+            <span className="muted">Se aplica porcentaje {String(parcelaPct)}%.</span>
+          </div>
+        )}
+
         <div className="controls">
           <button className="btn" onClick={handleSave} disabled={!canSave}>
             {saveStatus === 'saving' ? 'Guardando…' : 'Guardar'}
@@ -832,7 +940,10 @@ function App() {
               <button className={`btn ${relTab === 'today' ? '' : 'btn-outline'}`} onClick={() => setRelTab('today')}>Hoy</button>
               <button className={`btn ${relTab === 'previous' ? '' : 'btn-outline'}`} onClick={() => setRelTab('previous')}>Anteriores</button>
             </div>
-            <button className="btn btn-outline" onClick={exportCsv} disabled={(relTab==='today'?relsByTab.today.length:relsByTab.prev.length)===0}>Exportar CSV</button>
+            <div className="export-group">
+              <button className="btn btn-outline" onClick={() => exportCsv('today')} disabled={relsByTab.today.length === 0}>Exportar hoy</button>
+              <button className="btn btn-outline" onClick={() => exportCsv('all')} disabled={allRels.length === 0}>Exportar todo</button>
+            </div>
           </div>
         </div>
 
@@ -854,67 +965,99 @@ function App() {
           )}
           {palotGroups.length > 0 && (
             <div className="cells">
-              {palotGroups.map((g) => (
-                <div key={g.palot_id} className="cell">
-                  <div className="cell-title">
-                    Palot {g.palot_codigo}
-                    {g.hasPct && <span className="pill pill-warning">Parcela cedente</span>}
-                  </div>
-                  <div className="cell-inline">
-                    <label className="kg-label" htmlFor={`kg-${g.palot_id}`}>Kgs</label>
-                    <input
-                      id={`kg-${g.palot_id}`}
-                      className="kg-input"
-                      value={kgsDraft[g.palot_id] ?? (g.kgs == null ? '' : String(g.kgs))}
-                      onChange={(e) => setKgsDraft(s => ({ ...s, [g.palot_id]: e.target.value }))}
-                      onBlur={() => handleKgsBlur(g.palot_id, g.items[0]?.id)}
-                      placeholder="0"
-                      inputMode="decimal"
-                    />
-                    {kgSaveStatus[g.palot_id] === 'saving' && <span className="muted">Guardando…</span>}
-                    {kgSaveStatus[g.palot_id] === 'ok' && <span className="state ok">OK</span>}
-                    {kgSaveStatus[g.palot_id] === 'error' && <span className="state error">Error</span>}
-                  </div>
-                  <div className="cell-details">
-                    {g.items.map((r) => (
-                      <div
-                        key={r.id}
-                        className={`kv ${r.pending ? 'kv-pending-card' : ''}`}
-                        onClick={() => setExpandedId(expandedId === r.id ? null : r.id)}
+              {palotGroups.map((g) => {
+                const isCollapsed = !!collapsedPalots[g.palot_id];
+                return (
+                  <div key={g.palot_id} className={`cell ${isCollapsed ? 'cell-collapsed' : ''}`}>
+                    <div className="cell-title">
+                      <button
+                        type="button"
+                        className="collapse-toggle"
+                        onClick={() => togglePalotCollapse(g.palot_id)}
+                        aria-label={isCollapsed ? 'Expandir palot' : 'Colapsar palot'}
                       >
-                        {r.pending && (
-                          <span className="kv-pending" style={{ gridColumn: '1 / -1' }}>Pendiente de sincronización</span>
-                        )}
-                        {r.parcela_porcentaje != null && Number(r.parcela_porcentaje) > 0 && (
-                          <span className="kv-warning" style={{ gridColumn: '1 / -1' }}>Parcela cedente ({String(r.parcela_porcentaje)}%)</span>
-                        )}
-                        <span className="kv-label">Parcela</span><span className="kv-value">{r.parcela_nombre || '-'}</span>
-                        <span className="kv-label">Creado por</span><span className="kv-value">{r.created_by_username || r.created_by || '-'}</span>
-                        <span className="kv-label">Fecha</span><span className="kv-value">{r.created_at ? new Date(r.created_at).toLocaleString() : '-'}</span>
-                        <button
-                          className="cell-close"
-                          onClick={(event) => { event.stopPropagation(); handleDeleteRelation(r); }}
-                          disabled={!isOnline || syncing}
-                          aria-label="Eliminar relación"
-                        >
-                          ×
-                        </button>
-                        {expandedId === r.id && (
-                          <>
-                            <span className="kv-label">Municipio</span><span className="kv-value">{r.sigpac_municipio || '-'}</span>
-                            <span className="kv-label">Polígono</span><span className="kv-value">{r.sigpac_poligono || '-'}</span>
-                            <span className="kv-label">Parcela</span><span className="kv-value">{r.sigpac_parcela || '-'}</span>
-                            <span className="kv-label">Recinto</span><span className="kv-value">{r.sigpac_recinto || '-'}</span>
-                            <span className="kv-label">Variedad</span><span className="kv-value">{r.parcela_variedad || '-'}</span>
-                            <span className="kv-label">Porcentaje</span><span className="kv-value">{r.parcela_porcentaje != null ? String(r.parcela_porcentaje) + '%' : '-'}</span>
-                            <span className="kv-label">Nombre interno</span><span className="kv-value">{r.parcela_nombre_interno || '-'}</span>
-                          </>
-                        )}
+                        {isCollapsed ? '▶' : '▼'}
+                      </button>
+                      <span className="cell-title-text">
+                        Palot {g.palot_codigo}
+                        <span className="muted" style={{ marginLeft: '0.5rem', fontSize: '0.8rem' }}>({g.items.length})</span>
+                      </span>
+                      {g.hasPct && <span className="pill pill-warning">Parcela cedente</span>}
+                    </div>
+                    {!isCollapsed && (
+                      <div className="cell-details">
+                        {g.items.map((r) => {
+                          const relKey = getRelationKey(r);
+                          const hasPct = r.parcela_porcentaje != null && Number(r.parcela_porcentaje) > 0;
+                          const showKgEditor = hasPct || (r.kgs != null && r.kgs !== '');
+                          const canEditKg = !r.pending && !Number.isNaN(Number(r?.id));
+                          const draftValue = kgsDraft[relKey] ?? (r.kgs == null ? '' : String(r.kgs));
+                          const status = kgSaveStatus[relKey];
+                          return (
+                            <div
+                              key={r.id}
+                              className={`kv ${r.pending ? 'kv-pending-card' : ''}`}
+                              onClick={() => setExpandedId(expandedId === r.id ? null : r.id)}
+                            >
+                              {r.pending && (
+                                <span className="kv-pending" style={{ gridColumn: '1 / -1' }}>Pendiente de sincronización</span>
+                              )}
+                              {hasPct && (
+                                <span className="kv-warning" style={{ gridColumn: '1 / -1' }}>Parcela cedente ({String(r.parcela_porcentaje)}%)</span>
+                              )}
+                              {showKgEditor && (
+                                <div className="cell-inline" style={{ gridColumn: '1 / -1' }}>
+                                  <label className="kg-label" htmlFor={`kg-${relKey}`}>Kgs</label>
+                                  <input
+                                    id={`kg-${relKey}`}
+                                    className="kg-input"
+                                    value={draftValue}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setKgsDraft((s) => ({ ...s, [relKey]: val }));
+                                      setKgSaveStatus((s) => ({ ...s, [relKey]: 'idle' }));
+                                    }}
+                                    onBlur={() => canEditKg && handleKgsBlur(r)}
+                                    placeholder="0"
+                                    inputMode="decimal"
+                                    disabled={!canEditKg}
+                                  />
+                                  {status === 'saving' && <span className="muted">Guardando…</span>}
+                                  {status === 'ok' && <span className="state ok">OK</span>}
+                                  {status === 'error' && <span className="state error">Error</span>}
+                                  {!canEditKg && !r.pending && <span className="muted">Sin id de servidor</span>}
+                                </div>
+                              )}
+                              <span className="kv-label">Parcela</span><span className="kv-value">{r.parcela_nombre || '-'}</span>
+                              <span className="kv-label">Creado por</span><span className="kv-value">{r.created_by_username || r.created_by || '-'}</span>
+                              <span className="kv-label">Fecha</span><span className="kv-value">{r.created_at ? new Date(r.created_at).toLocaleString() : '-'}</span>
+                              <button
+                                className="cell-close"
+                                onClick={(event) => { event.stopPropagation(); handleDeleteRelation(r); }}
+                                disabled={!isOnline || syncing}
+                                aria-label="Eliminar relación"
+                              >
+                                ×
+                              </button>
+                              {expandedId === r.id && (
+                                <>
+                                  <span className="kv-label">Municipio</span><span className="kv-value">{r.sigpac_municipio || '-'}</span>
+                                  <span className="kv-label">Polígono</span><span className="kv-value">{r.sigpac_poligono || '-'}</span>
+                                  <span className="kv-label">Parcela</span><span className="kv-value">{r.sigpac_parcela || '-'}</span>
+                                  <span className="kv-label">Recinto</span><span className="kv-value">{r.sigpac_recinto || '-'}</span>
+                                  <span className="kv-label">Variedad</span><span className="kv-value">{r.parcela_variedad || '-'}</span>
+                                  <span className="kv-label">Porcentaje</span><span className="kv-value">{r.parcela_porcentaje != null ? String(r.parcela_porcentaje) + '%' : '-'}</span>
+                                  <span className="kv-label">Nombre interno</span><span className="kv-value">{r.parcela_nombre_interno || '-'}</span>
+                                </>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
-                    ))}
+                    )}
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
