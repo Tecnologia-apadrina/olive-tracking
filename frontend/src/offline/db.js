@@ -98,6 +98,7 @@ function makePalotRecord(palot) {
     id: palot.id ?? (palot.localId ? `local-${palot.localId}` : null),
     codigo: palot.codigo,
     kgs: palot.kgs ?? null,
+    procesado: Boolean(palot.procesado),
     pending: Boolean(palot.pending),
     source: palot.source || (palot.id != null ? 'server' : 'local'),
     created_at: palot.created_at || null,
@@ -121,6 +122,7 @@ function makeRelationRecord(rel) {
     parcela_nombre_interno: rel.parcela_nombre_interno ?? '',
     palot_id: rel.palot_id ?? null,
     palot_codigo: rel.palot_codigo ?? '',
+    palot_procesado: rel.palot_procesado == null ? null : Boolean(rel.palot_procesado),
     kgs: rel.kgs ?? null,
     created_by: rel.created_by ?? null,
     created_by_username: rel.created_by_username ?? '',
@@ -135,6 +137,7 @@ function toUiPalot(record) {
     id: record.id ?? record.key,
     codigo: record.codigo,
     kgs: record.kgs,
+    procesado: Boolean(record.procesado),
     pending: record.pending,
     source: record.source,
     created_at: record.created_at,
@@ -156,6 +159,7 @@ function toUiRelation(record) {
     parcela_nombre_interno: record.parcela_nombre_interno,
     palot_id: record.palot_id ?? record.key,
     palot_codigo: record.palot_codigo,
+    palot_procesado: record.palot_procesado == null ? null : Boolean(record.palot_procesado),
     kgs: record.kgs,
     created_by: record.created_by,
     created_by_username: record.created_by_username,
@@ -204,7 +208,7 @@ async function applyPendingOp(op, stores) {
     if (!codigo) return;
     const existing = await palotsStore.index('byCodigo').get(codigo);
     if (existing) return;
-    palotsStore.put(makePalotRecord({ codigo, pending: true, source: 'local', localId: op.localId || op.id }));
+    palotsStore.put(makePalotRecord({ codigo, pending: true, source: 'local', localId: op.localId || op.id, procesado: false }));
   }
   if (op.type === 'createRelation') {
     const payload = op.payload || {};
@@ -226,6 +230,7 @@ async function applyPendingOp(op, stores) {
       sigpac_recinto: payload.sigpac_recinto,
       palot_codigo: payload.palot_codigo,
       palot_id: payload.palot_id ?? null,
+      palot_procesado: false,
       kgs: payload.kgs ?? null,
       created_by: payload.created_by ?? null,
       created_by_username: payload.created_by_username ?? '',
@@ -398,4 +403,3 @@ export async function replaceRelationPlaceholder(parcelaId, palotCodigo, serverR
   }
   await tx.done;
 }
-

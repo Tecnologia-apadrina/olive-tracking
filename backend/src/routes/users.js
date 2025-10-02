@@ -25,7 +25,7 @@ router.post('/users', requireAuth, requireAdmin, async (req, res) => {
   try {
     const row = await db.public.one(
       'INSERT INTO users(username, password_hash, role) VALUES($1, $2, $3) RETURNING id, username, role',
-      [username, hashPassword(password), role || 'user']
+      [username, hashPassword(password), role || 'campo']
     );
     res.status(201).json(row);
   } catch (e) {

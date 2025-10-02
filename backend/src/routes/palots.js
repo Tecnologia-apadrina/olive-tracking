@@ -28,6 +28,29 @@ router.post('/palots', async (req, res) => {
   res.status(201).json(result);
 });
 
+// Update palot attributes (currently procesado)
+router.patch('/palots/:id', async (req, res) => {
+  if (!req.userId) return res.status(401).json({ error: 'No autenticado' });
+  if (!['admin', 'molino'].includes(req.userRole)) {
+    return res.status(403).json({ error: 'Requiere permisos de molino o admin' });
+  }
+  const { id } = req.params;
+  const { procesado } = req.body || {};
+  if (procesado === undefined) {
+    return res.status(400).json({ error: 'procesado requerido' });
+  }
+  const normalized = procesado === true || procesado === 'true' || procesado === 1 || procesado === '1';
+  try {
+    const result = await db.public.one(
+      'UPDATE palots SET procesado = $2 WHERE id = $1 RETURNING *',
+      [id, normalized]
+    );
+    res.json(result);
+  } catch (e) {
+    res.status(404).json({ error: 'Palot no encontrado' });
+  }
+});
+
 // Delete palot (admin suggested)
 router.delete('/palots/:id', async (req, res) => {
   if (!req.userId || req.userRole !== 'admin') return res.status(403).json({ error: 'Requiere admin' });

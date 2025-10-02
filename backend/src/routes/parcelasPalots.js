@@ -61,6 +61,7 @@ router.get('/parcelas-palots', async (req, res) => {
               par.nombre_interno AS parcela_nombre_interno,
               p.id     AS palot_id,
               p.codigo AS palot_codigo,
+              p.procesado AS palot_procesado,
               pp.kgs   AS kgs,
               pp.id_usuario AS created_by,
               u.username AS created_by_username,
