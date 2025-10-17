@@ -137,7 +137,7 @@ router.post('/import/parcelas', requireAuth, requireAdmin, async (req, res) => {
   if (rows.length === 0) return res.status(400).json({ error: 'CSV vacío' });
 
   // Validate required columns exist in CSV header
-  const requiredCsvNames = ['id','Nombre','Nombre-interno','Variedad','SIGPAC_Municipio','SIGPAC_Poligono','SIGPAC_Parcela','SIGPAC_Recinto','Porcentaje'];
+  const requiredCsvNames = ['id','name','common-name','variety_id','SIGPAC_Municipio','SIGPAC_Poligono','SIGPAC_Parcela','SIGPAC_Recinto','contract_percentage'];
   const requiredNorm = requiredCsvNames.map(normalizeKey);
   const present = new Set(header);
   const missing = requiredNorm.filter(k => !present.has(k));
@@ -174,7 +174,7 @@ router.post('/import/parcelas', requireAuth, requireAdmin, async (req, res) => {
       continue;
     }
     await db.public.none(
-        `INSERT INTO parcelas(id, nombre, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, variedad, nombre_interno, porcentaje)
+        `INSERT INTO parcelas(id, name, SIGPAC_Municipio, SIGPAC_Poligono, SIGPAC_Parcela, SIGPAC_Recinto, variety_id, common_name, porcentaje)
          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
          ON CONFLICT (id) DO UPDATE SET
            nombre = COALESCE(EXCLUDED.nombre, parcelas.nombre),
