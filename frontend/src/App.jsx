@@ -17,6 +17,8 @@ import {
 } from './offline/db';
 import { syncAll, syncDown, syncUp } from './offline/sync';
 
+const DEFAULT_CEDENTE_KGS = 300;
+
 const normalizeRole = (role) => {
   if (!role) return '';
   return role === 'user' ? 'campo' : role;
@@ -49,6 +51,7 @@ function App() {
   const [relStatus, setRelStatus] = useState('idle'); // idle | loading | ready | error
   const [kgsDraft, setKgsDraft] = useState({}); // { [relationKey]: string }
   const [kgSaveStatus, setKgSaveStatus] = useState({}); // { [relationKey]: 'idle'|'saving'|'ok'|'error' }
+  const [aderezoSaveStatus, setAderezoSaveStatus] = useState({}); // { [palotKey]: 'idle'|'saving'|'ok'|'error' }
   const [collapsedPalots, setCollapsedPalots] = useState({}); // { [palotId]: boolean }
   const [palotProcessing, setPalotProcessing] = useState({}); // { [palotKey]: 'saving'|'error' }
   const debounceRef = useRef(null);
@@ -339,6 +342,7 @@ function App() {
     }
     setKgsDraft(Object.fromEntries(map));
     setKgSaveStatus({});
+    setAderezoSaveStatus({});
     setPendingCount(Array.isArray(pending) ? pending.length : 0);
     return rows;
   };
@@ -576,6 +580,7 @@ function App() {
           sigpac_parcela: parcelaInfo?.sigpac_parcela || '',
           sigpac_recinto: parcelaInfo?.sigpac_recinto || '',
           kgs: normalizedKgs,
+          reservado_aderezo: false,
           created_at: new Date().toISOString(),
           created_by: authUser || '',
           created_by_username: authUser || '',
@@ -630,7 +635,7 @@ function App() {
         const relRes = await fetch(`${apiBase}/parcelas/${parcelaId}/palots`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...authHeaders },
-          body: JSON.stringify({ palot_id: palotRow.id, kgs: normalizedKgs })
+          body: JSON.stringify({ palot_id: palotRow.id, kgs: normalizedKgs, reservado_aderezo: false })
         });
         if (relRes.status === 401) {
           const err = new Error('No autenticado');
@@ -715,19 +720,15 @@ function App() {
     let normalizedKgs = null;
 
     if (hasPct) {
-      if (!parsedKgs.hasValue) {
-        const confirmed = typeof window === 'undefined' ? true : window.confirm('La parcela tiene porcentaje y no has introducido los kgs. ¿Quieres continuar sin registrarlos?');
-        if (!confirmed) {
-          setSaveStatus('idle');
-          setMessage('Introduce los kgs para continuar o confirma que deseas omitirlos.');
+      if (parsedKgs.hasValue) {
+        if (!parsedKgs.valid) {
+          setSaveStatus('fail');
+          setMessage('Introduce un valor numérico en Kgs.');
           return;
         }
-      } else if (!parsedKgs.valid) {
-        setSaveStatus('fail');
-        setMessage('Introduce un valor numérico en Kgs.');
-        return;
-      } else {
         normalizedKgs = parsedKgs.value;
+      } else {
+        normalizedKgs = DEFAULT_CEDENTE_KGS;
       }
     } else if (parsedKgs.hasValue) {
       if (!parsedKgs.valid) {
@@ -749,6 +750,7 @@ function App() {
   };
 
   const pendingPalotsCount = palotList.length + (String(palotInput ?? '').trim() ? 1 : 0);
+  const isOlivoLocked = palotList.length > 0 || saveStatus === 'saving';
   const canSave = status === 'success' && !!parcelaId && pendingPalotsCount > 0 && saveStatus !== 'saving';
 
   const addPalotToCustomList = () => {
@@ -786,10 +788,10 @@ function App() {
     const parcelaInfo = await getParcelaById(parcelaId).catch(() => null);
     await persistPalotCodes({
       codes: [trimmed],
-      normalizedKgs: 300,
+      normalizedKgs: DEFAULT_CEDENTE_KGS,
       parcelaInfoOverride: parcelaInfo,
-      successMessage: `Palot ${trimmed} guardado con 300 kgs.`,
-      offlineMessage: `Palot ${trimmed} guardado sin conexión (300 kgs). Se sincronizará al recuperar la red.`,
+      successMessage: `Palot ${trimmed} guardado con ${DEFAULT_CEDENTE_KGS} kgs.`,
+      offlineMessage: `Palot ${trimmed} guardado sin conexión (${DEFAULT_CEDENTE_KGS} kgs). Se sincronizará al recuperar la red.`,
       resetMode: 'input',
     });
   };
@@ -882,7 +884,7 @@ function App() {
   }, [syncMessage]);
 
   const parcelaHasPct = parcelaPct != null && parcelaPct !== '' && !Number.isNaN(Number(parcelaPct)) && Number(parcelaPct) > 0;
-  const canManagePalots = authRole === 'admin' || authRole === 'molino';
+  const canManagePalots = authRole === 'admin' || authRole === 'molino' || authRole === 'patio';
   const canExport = canManagePalots;
 
   const exportCsv = (mode) => {
@@ -984,6 +986,48 @@ function App() {
       setTimeout(() => setKgSaveStatus((s) => ({ ...s, [relKey]: 'idle' })), 1200);
     } catch (e) {
       setKgSaveStatus((s) => ({ ...s, [relKey]: 'error' }));
+    }
+  };
+
+  const handleTogglePalotAderezoReservation = async ({ palotId, palotCodigo, relations }) => {
+    if (authRole !== 'campo') return;
+    const palotKey = palotKeyForState(palotId, palotCodigo);
+    const actionable = (relations || []).filter((rel) => !rel.pending && Number.isFinite(Number(rel?.id)));
+    if (!actionable.length) return;
+    if (!isOnline) return;
+
+    const currentlyReserved = actionable.every((rel) => Boolean(rel.reservado_aderezo));
+    const nextValue = !currentlyReserved;
+    const relationKeySet = new Set(actionable.map((rel) => getRelationKey(rel)));
+    const relationIdSet = new Set(actionable.map((rel) => Number(rel.id)));
+
+    setAderezoSaveStatus((s) => ({ ...s, [palotKey]: 'saving' }));
+    try {
+      await Promise.all(actionable.map((rel) => fetch(`${apiBase}/parcelas-palots/${Number(rel.id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ reservado_aderezo: nextValue })
+      }).then((res) => {
+        if (!res.ok) throw new Error('No se pudo actualizar la reserva');
+        return res.json().catch(() => ({}));
+      })));
+
+      const updateRows = (rows = []) => rows.map((row) => {
+        const key = getRelationKey(row);
+        if (relationKeySet.has(key) || relationIdSet.has(Number(row.id))) {
+          return { ...row, reservado_aderezo: nextValue };
+        }
+        return row;
+      });
+      setAllRels(updateRows);
+      setRelPalots(updateRows);
+      setAderezoSaveStatus((s) => ({ ...s, [palotKey]: 'ok' }));
+      setTimeout(() => {
+        setAderezoSaveStatus((s) => ({ ...s, [palotKey]: 'idle' }));
+      }, 1200);
+    } catch (err) {
+      console.error('Error actualizando reserva de aderezo', err);
+      setAderezoSaveStatus((s) => ({ ...s, [palotKey]: 'error' }));
     }
   };
 
@@ -1097,7 +1141,11 @@ function App() {
             onChange={e => setOlivo(e.target.value)}
             placeholder="Ej. 123"
             inputMode="numeric"
+            disabled={isOlivoLocked}
           />
+          {isOlivoLocked && (
+            <span className="state warning">Nº de olivo bloqueado hasta guardar los palots pendientes.</span>
+          )}
           {status === 'waiting' && <span className="state muted">Esperando a terminar de escribir…</span>}
           {status === 'loading' && <span className="state muted">Buscando parcela…</span>}
           {status === 'success' && parcelaNombre && (
@@ -1141,7 +1189,7 @@ function App() {
             className="btn-link"
             onClick={addPalotToCustomList}
           >
-            Añadir a lista para guardar con Kgs personalizados
+            Añadir otro palot a esta parcela.
           </button>
           {palotAddError && <span className="state error" style={{ marginTop: '0.35rem' }}>{palotAddError}</span>}
           {palotList.length > 0 && (
@@ -1260,7 +1308,17 @@ function App() {
                     : isProcessed
                       ? 'Marcar como no procesado'
                       : 'Marcar como procesado';
-                const showActions = canManagePalots || isProcessed || processingError;
+                const canReservePalot = authRole === 'campo';
+                const palotReservationStatus = aderezoSaveStatus[palotStateKey] ?? 'idle';
+                const actionableRelations = (g.items || []).filter((rel) => !rel.pending && Number.isFinite(Number(rel?.id)));
+                const palotReserved = actionableRelations.length > 0 && actionableRelations.every((rel) => Boolean(rel.reservado_aderezo));
+                const palotReservationDisabled = palotReservationStatus === 'saving' || !isOnline || actionableRelations.length === 0;
+                const palotReservationLabel = palotReservationStatus === 'saving'
+                  ? 'Guardando…'
+                  : palotReserved
+                    ? 'Quitar reserva'
+                    : 'Reservar aderezo';
+                const showActions = canManagePalots || isProcessed || processingError || canReservePalot;
                 return (
                   <div key={g.palot_id} className={`cell ${isCollapsed ? 'cell-collapsed' : ''}`}>
                     <div className="cell-title">
@@ -1276,6 +1334,11 @@ function App() {
                         Palot {g.palot_codigo}
                         <span className="muted" style={{ marginLeft: '0.5rem', fontSize: '0.8rem' }}>({g.items.length})</span>
                       </span>
+                      {(palotReserved || (g.items || []).some((rel) => Boolean(rel.reservado_aderezo))) && (
+                        <span className="pill pill-info" style={{ marginLeft: '0.5rem' }}>
+                          {authRole === 'molino' || authRole === 'patio' ? 'Guardar para aderezo' : 'Reservado para aderezo'}
+                        </span>
+                      )}
                       {g.hasPct && <span className="pill pill-warning">Parcela cedente</span>}
                       {showActions && (
                         <div className="cell-actions">
@@ -1296,6 +1359,22 @@ function App() {
                               {buttonLabel}
                             </button>
                           )}
+                          {canReservePalot && (
+                            <button
+                              type="button"
+                              className={`btn btn-sm ${palotReserved ? 'btn-success' : 'btn-outline'}`}
+                              disabled={palotReservationDisabled}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                if (palotReservationDisabled) return;
+                                handleTogglePalotAderezoReservation({ palotId: g.palot_id, palotCodigo: g.palot_codigo, relations: g.items });
+                              }}
+                            >
+                              {palotReservationLabel}
+                            </button>
+                          )}
+                          {canReservePalot && palotReservationStatus === 'ok' && <span className="state ok">OK</span>}
+                          {canReservePalot && palotReservationStatus === 'error' && <span className="state error">Error</span>}
                           {processingError && (
                             <span className="muted" style={{ color: '#b91c1c', fontWeight: 600 }}>Error</span>
                           )}
@@ -1496,6 +1575,7 @@ function UsersView({ apiBase, authHeaders, appVersion, dbUrl }) {
           <input style={{ width: 160 }} placeholder="contraseña" type="password" value={p} onChange={e => setP(e.target.value)} />
           <select value={role} onChange={e => setRole(e.target.value)}>
             <option value="campo">campo</option>
+            <option value="patio">patio</option>
             <option value="molino">molino</option>
             <option value="admin">admin</option>
           </select>
@@ -1512,6 +1592,7 @@ function UsersView({ apiBase, authHeaders, appVersion, dbUrl }) {
               <input style={{ width: 160 }} value={drafts[us.id]?.username ?? ''} onChange={e => setDrafts(d => ({ ...d, [us.id]: { ...(d[us.id]||{}), username: e.target.value } }))} />
               <select value={drafts[us.id]?.role ?? 'campo'} onChange={e => setDrafts(d => ({ ...d, [us.id]: { ...(d[us.id]||{}), role: e.target.value } }))}>
                 <option value="campo">campo</option>
+                <option value="patio">patio</option>
                 <option value="molino">molino</option>
                 <option value="admin">admin</option>
               </select>

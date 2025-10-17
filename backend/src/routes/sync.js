@@ -23,6 +23,7 @@ router.get('/sync/snapshot', async (req, res) => {
                              p.codigo AS palot_codigo,
                              p.procesado AS palot_procesado,
                              pp.kgs   AS kgs,
+                             pp.reservado_aderezo AS reservado_aderezo,
                              pp.id_usuario AS created_by,
                              u.username AS created_by_username,
                              pp.created_at AS created_at

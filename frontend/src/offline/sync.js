@@ -78,7 +78,7 @@ export async function syncUp(apiBase, authHeaders) {
     }
     if (op.type === 'createRelation') {
       const payload = op.payload || {};
-      const { parcela_id, palot_codigo, kgs } = payload;
+      const { parcela_id, palot_codigo, kgs, reservado_aderezo } = payload;
       if (!parcela_id || !palot_codigo) {
         await removePendingOp(op.id);
         processed.push(op.id);
@@ -88,7 +88,7 @@ export async function syncUp(apiBase, authHeaders) {
       await fetchJson(`${apiBase}/parcelas/${parcela_id}/palots`, {
         method: 'POST',
         headers: buildHeaders(authHeaders, { 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ palot_id: palot.id, kgs: kgs ?? null }),
+        body: JSON.stringify({ palot_id: palot.id, kgs: kgs ?? null, reservado_aderezo: reservado_aderezo ?? false }),
       });
       await replaceRelationPlaceholder(parcela_id, palot_codigo, null);
       await removePendingOp(op.id);
@@ -105,4 +105,3 @@ export async function syncAll(apiBase, authHeaders) {
   const snapshot = await syncDown(apiBase, authHeaders);
   return { uploaded: resultUp.uploaded, snapshot };
 }
-

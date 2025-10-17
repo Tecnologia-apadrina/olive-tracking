@@ -92,6 +92,19 @@ function normalizeNumber(value) {
   return Number.isFinite(num) ? num : null;
 }
 
+function normalizeBool(value) {
+  if (value === true) return true;
+  if (value === false) return false;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    return ['1', 'true', 't', 'yes', 'si', 'sí'].includes(normalized);
+  }
+  if (typeof value === 'number') {
+    return value === 1;
+  }
+  return Boolean(value);
+}
+
 function makePalotRecord(palot) {
   return {
     key: palot.key || (palot.id != null ? `srv-${palot.id}` : palot.localId ? `local-${palot.localId}` : `local-${randomId()}`),
@@ -124,6 +137,7 @@ function makeRelationRecord(rel) {
     palot_codigo: rel.palot_codigo ?? '',
     palot_procesado: rel.palot_procesado == null ? null : Boolean(rel.palot_procesado),
     kgs: rel.kgs ?? null,
+    reservado_aderezo: normalizeBool(rel.reservado_aderezo),
     created_by: rel.created_by ?? null,
     created_by_username: rel.created_by_username ?? '',
     created_at: rel.created_at || new Date().toISOString(),
@@ -161,6 +175,7 @@ function toUiRelation(record) {
     palot_codigo: record.palot_codigo,
     palot_procesado: record.palot_procesado == null ? null : Boolean(record.palot_procesado),
     kgs: record.kgs,
+    reservado_aderezo: normalizeBool(record.reservado_aderezo),
     created_by: record.created_by,
     created_by_username: record.created_by_username,
     created_at: record.created_at,
@@ -232,6 +247,7 @@ async function applyPendingOp(op, stores) {
       palot_id: payload.palot_id ?? null,
       palot_procesado: false,
       kgs: payload.kgs ?? null,
+      reservado_aderezo: normalizeBool(payload.reservado_aderezo),
       created_by: payload.created_by ?? null,
       created_by_username: payload.created_by_username ?? '',
       created_at: payload.created_at || new Date().toISOString(),
