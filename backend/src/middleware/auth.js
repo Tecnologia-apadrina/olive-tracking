@@ -22,7 +22,7 @@ module.exports = async function (req, _res, next) {
         if (user && verifyPassword(password, user.password_hash)) {
           req.userId = user.id;
           req.username = user.username;
-          req.userRole = user.role || 'user';
+          req.userRole = user.role || 'campo';
         }
       }
     } catch (_) {

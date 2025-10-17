@@ -17,6 +17,13 @@ import {
 } from './offline/db';
 import { syncAll, syncDown, syncUp } from './offline/sync';
 
+const DEFAULT_CEDENTE_KGS = 300;
+
+const normalizeRole = (role) => {
+  if (!role) return '';
+  return role === 'user' ? 'campo' : role;
+};
+
 function App() {
   // Auth
   const [authUser, setAuthUser] = useState('');
@@ -24,8 +31,11 @@ function App() {
   const [authToken, setAuthToken] = useState(''); // base64 username:password
   const [authRole, setAuthRole] = useState('');
   const [view, setView] = useState('main'); // main | users | olivos | parcelas | palots
-  const [palot, setPalot] = useState('');
+  const [palotInput, setPalotInput] = useState('');
+  const [palotList, setPalotList] = useState([]);
   const [palotKgs, setPalotKgs] = useState('');
+  const [palotAddError, setPalotAddError] = useState('');
+  const [showOwnPalotsOnly, setShowOwnPalotsOnly] = useState(false);
   const [olivo, setOlivo] = useState('');
   const [parcelaNombre, setParcelaNombre] = useState('');
   const [parcelaId, setParcelaId] = useState(null);
@@ -41,7 +51,9 @@ function App() {
   const [relStatus, setRelStatus] = useState('idle'); // idle | loading | ready | error
   const [kgsDraft, setKgsDraft] = useState({}); // { [relationKey]: string }
   const [kgSaveStatus, setKgSaveStatus] = useState({}); // { [relationKey]: 'idle'|'saving'|'ok'|'error' }
+  const [aderezoSaveStatus, setAderezoSaveStatus] = useState({}); // { [palotKey]: 'idle'|'saving'|'ok'|'error' }
   const [collapsedPalots, setCollapsedPalots] = useState({}); // { [palotId]: boolean }
+  const [palotProcessing, setPalotProcessing] = useState({}); // { [palotKey]: 'saving'|'error' }
   const debounceRef = useRef(null);
   const [appVersion, setAppVersion] = useState('');
   const [dbUrl, setDbUrl] = useState('');
@@ -75,13 +87,14 @@ function App() {
           token = legacyToken || '';
           username = legacyUser || username;
           if (legacyToken) {
-            saveAuthSession({ token: legacyToken, username: legacyUser || '', role: role || '' }).catch(() => {});
+            const safeRole = normalizeRole(role);
+            saveAuthSession({ token: legacyToken, username: legacyUser || '', role: safeRole || '' }).catch(() => {});
           }
         }
         if (!cancelled && token) {
           setAuthToken(token);
           setAuthUser(username || '');
-          setAuthRole(role || '');
+          setAuthRole(normalizeRole(role));
         }
         const last = await getLastSnapshotIso();
         if (!cancelled && last) setLastSync(last);
@@ -156,17 +169,24 @@ function App() {
   const applySession = async ({ username, token, role, persist = true }) => {
     setAuthToken(token);
     setAuthUser(username);
-    setAuthRole(role || '');
+    const safeRole = normalizeRole(role);
+    setAuthRole(safeRole);
     if (persist) {
       try {
         localStorage.setItem('authToken', token);
         localStorage.setItem('authUser', username);
       } catch (_) {}
       try {
-        await saveAuthSession({ token, username, role: role || '' });
+        await saveAuthSession({ token, username, role: safeRole || '' });
       } catch (_) {}
     }
   };
+
+  useEffect(() => {
+    if (authRole !== 'campo' && showOwnPalotsOnly) {
+      setShowOwnPalotsOnly(false);
+    }
+  }, [authRole, showOwnPalotsOnly]);
 
   const performLogin = async (u, p) => {
     try {
@@ -322,6 +342,7 @@ function App() {
     }
     setKgsDraft(Object.fromEntries(map));
     setKgSaveStatus({});
+    setAderezoSaveStatus({});
     setPendingCount(Array.isArray(pending) ? pending.length : 0);
     return rows;
   };
@@ -480,18 +501,215 @@ function App() {
     setCollapsedPalots((prev) => ({ ...prev, [palotId]: !prev[palotId] }));
   };
 
+  const persistPalotCodes = async ({
+    codes,
+    normalizedKgs,
+    parcelaInfoOverride = null,
+    successMessage,
+    offlineMessage,
+    resetMode = 'full',
+  }) => {
+    const uniqueCodes = Array.from(new Set((codes || []).map((raw) => String(raw).trim()).filter(Boolean)));
+    if (uniqueCodes.length === 0) {
+      setSaveStatus('fail');
+      setMessage('Añade al menos un número de palot.');
+      return { ok: false, reason: 'no-codes' };
+    }
+
+    const parcelaInfo = parcelaInfoOverride ?? (await getParcelaById(parcelaId).catch(() => null));
+    const defaultSuccessMsg = uniqueCodes.length > 1
+      ? `Relaciones guardadas para ${uniqueCodes.length} palots.`
+      : 'Relación guardada correctamente.';
+    const defaultOfflineMsg = uniqueCodes.length > 1
+      ? `Relaciones guardadas sin conexión (${uniqueCodes.length}). Se sincronizarán al recuperar la red.`
+      : 'Guardado sin conexión. Se sincronizará al recuperar la red.';
+    const successMsg = successMessage || defaultSuccessMsg;
+    const offlineMsg = offlineMessage || defaultOfflineMsg;
+
+    const resetAfterSuccess = () => {
+      if (resetMode === 'full') {
+        setPalotList([]);
+        setPalotInput('');
+        setPalotAddError('');
+        setOlivo('');
+        setParcelaNombre('');
+        setParcelaId(null);
+        setParcelaPct(null);
+        setPalotKgs('');
+        setStatus('idle');
+      } else if (resetMode === 'input') {
+        setPalotList((prev) => prev.filter((code) => !uniqueCodes.includes(code)));
+        setPalotInput('');
+        setPalotAddError('');
+        setOlivo('');
+        setParcelaNombre('');
+        setParcelaId(null);
+        setParcelaPct(null);
+        setPalotKgs('');
+        setStatus('idle');
+      }
+    };
+
+    const handleRemainingCodes = (remaining) => {
+      if (resetMode === 'full') {
+        setPalotList(remaining);
+        setPalotInput(remaining[0] || '');
+      } else if (resetMode === 'input') {
+        setPalotInput(remaining[0] || '');
+        setPalotAddError('');
+      }
+    };
+
+    const saveOfflineCodes = async (msg, codesToSave = uniqueCodes) => {
+      const targets = Array.from(new Set((codesToSave || []).map((raw) => String(raw).trim()).filter(Boolean)));
+      if (targets.length === 0) return;
+      for (const palotCode of targets) {
+        const existingPalot = await getPalotByCodigo(palotCode).catch(() => null);
+        if (!existingPalot || existingPalot.source !== 'server') {
+          await enqueueEnsurePalot(palotCode);
+        }
+        await enqueueRelation({
+          parcela_id: parcelaId,
+          palot_codigo: palotCode,
+          parcela_nombre: parcelaInfo?.nombre || parcelaNombre || '',
+          parcela_variedad: parcelaInfo?.variedad || '',
+          parcela_porcentaje: parcelaInfo?.porcentaje ?? parcelaPct ?? null,
+          parcela_nombre_interno: parcelaInfo?.nombre_interno || '',
+          sigpac_municipio: parcelaInfo?.sigpac_municipio || '',
+          sigpac_poligono: parcelaInfo?.sigpac_poligono || '',
+          sigpac_parcela: parcelaInfo?.sigpac_parcela || '',
+          sigpac_recinto: parcelaInfo?.sigpac_recinto || '',
+          kgs: normalizedKgs,
+          reservado_aderezo: false,
+          created_at: new Date().toISOString(),
+          created_by: authUser || '',
+          created_by_username: authUser || '',
+        });
+      }
+      await refreshAllData();
+      await loadRelPalots(parcelaId);
+      setSaveStatus('ok');
+      setMessage(msg || offlineMsg);
+      resetAfterSuccess();
+    };
+
+    setSaveStatus('saving');
+    const processedCodes = [];
+
+    try {
+      if (!isOnline) {
+        await saveOfflineCodes(offlineMsg);
+        return { ok: true, mode: 'offline' };
+      }
+
+      const listRes = await fetch(`${apiBase}/palots`, { headers: { ...authHeaders } });
+      if (listRes.status === 401) {
+        const err = new Error('No autenticado');
+        err.status = 401;
+        throw err;
+      }
+      const palots = listRes.ok ? await listRes.json() : [];
+      const palotMap = new Map();
+      for (const item of Array.isArray(palots) ? palots : []) {
+        palotMap.set(String(item.codigo).trim(), item);
+      }
+
+      for (const palotCode of uniqueCodes) {
+        let palotRow = palotMap.get(palotCode);
+        if (!palotRow) {
+          const createRes = await fetch(`${apiBase}/palots`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...authHeaders },
+            body: JSON.stringify({ codigo: palotCode })
+          });
+          if (createRes.status === 401) {
+            const err = new Error('No autenticado');
+            err.status = 401;
+            throw err;
+          }
+          if (!createRes.ok) throw new Error(`No se pudo crear el palot ${palotCode}`);
+          palotRow = await createRes.json();
+          palotMap.set(String(palotRow.codigo).trim(), palotRow);
+        }
+
+        const relRes = await fetch(`${apiBase}/parcelas/${parcelaId}/palots`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders },
+          body: JSON.stringify({ palot_id: palotRow.id, kgs: normalizedKgs, reservado_aderezo: false })
+        });
+        if (relRes.status === 401) {
+          const err = new Error('No autenticado');
+          err.status = 401;
+          throw err;
+        }
+        if (!relRes.ok) {
+          const errBody = await relRes.json().catch(() => ({}));
+          const baseMsg = errBody.error || 'No se pudo guardar la relación';
+          throw new Error(`${baseMsg} (palot ${palotCode})`);
+        }
+        processedCodes.push(palotCode);
+      }
+
+      setSaveStatus('ok');
+      setMessage(successMsg);
+      await runSync({ mode: 'pull' });
+      await loadRelPalots(parcelaId);
+      resetAfterSuccess();
+      return { ok: true, mode: 'online' };
+    } catch (e) {
+      const remainingCodes = uniqueCodes.filter((code) => !processedCodes.includes(code));
+      if (!isOnline || e.name === 'TypeError' || e.message === 'Failed to fetch' || e.message === 'network') {
+        if (remainingCodes.length > 0) {
+          await saveOfflineCodes(offlineMsg, remainingCodes);
+        } else {
+          setSaveStatus('ok');
+          setMessage(successMsg);
+          await refreshAllData();
+          await loadRelPalots(parcelaId);
+          resetAfterSuccess();
+        }
+        return { ok: true, mode: 'offline-fallback' };
+      }
+
+      setSaveStatus('fail');
+      if (e.status === 401 || (e.message && e.message.includes('401'))) {
+        setMessage('No autenticado. Inicia sesión.');
+      } else {
+        setMessage(e.message || 'Error al guardar.');
+      }
+      handleRemainingCodes(remainingCodes);
+      return { ok: false, error: e };
+    }
+  };
+
   const handleSave = async () => {
     setMessage('');
+    setPalotAddError('');
     if (!parcelaId) {
       setSaveStatus('fail');
       setMessage('Primero busca un olivo válido para obtener su parcela.');
       return;
     }
-    const palotCode = String(palot ?? '').trim();
-    if (palotCode === '') {
+
+    const typedCode = String(palotInput ?? '').trim();
+    const palotCodes = [];
+    const pushCode = (raw) => {
+      if (raw === null || raw === undefined) return;
+      const code = String(raw).trim();
+      if (!code) return;
+      if (!palotCodes.includes(code)) palotCodes.push(code);
+    };
+    palotList.forEach(pushCode);
+    pushCode(typedCode);
+
+    if (palotCodes.length === 0) {
       setSaveStatus('fail');
-      setMessage('Introduce un número de palot.');
+      setMessage('Añade al menos un número de palot.');
       return;
+    }
+
+    if (typedCode && !palotList.includes(typedCode)) {
+      setPalotList((prev) => (prev.includes(typedCode) ? prev : [...prev, typedCode]));
     }
 
     const parcelaInfo = await getParcelaById(parcelaId).catch(() => null);
@@ -502,19 +720,15 @@ function App() {
     let normalizedKgs = null;
 
     if (hasPct) {
-      if (!parsedKgs.hasValue) {
-        const confirmed = typeof window === 'undefined' ? true : window.confirm('La parcela tiene porcentaje y no has introducido los kgs. ¿Quieres continuar sin registrarlos?');
-        if (!confirmed) {
-          setSaveStatus('idle');
-          setMessage('Introduce los kgs para continuar o confirma que deseas omitirlos.');
+      if (parsedKgs.hasValue) {
+        if (!parsedKgs.valid) {
+          setSaveStatus('fail');
+          setMessage('Introduce un valor numérico en Kgs.');
           return;
         }
-      } else if (!parsedKgs.valid) {
-        setSaveStatus('fail');
-        setMessage('Introduce un valor numérico en Kgs.');
-        return;
-      } else {
         normalizedKgs = parsedKgs.value;
+      } else {
+        normalizedKgs = DEFAULT_CEDENTE_KGS;
       }
     } else if (parsedKgs.hasValue) {
       if (!parsedKgs.valid) {
@@ -525,109 +739,67 @@ function App() {
       normalizedKgs = parsedKgs.value;
     }
 
-    setSaveStatus('saving');
-
-    const saveOffline = async (msg) => {
-      const existingPalot = await getPalotByCodigo(palotCode).catch(() => null);
-      if (!existingPalot || existingPalot.source !== 'server') {
-        await enqueueEnsurePalot(palotCode);
-      }
-      await enqueueRelation({
-        parcela_id: parcelaId,
-        palot_codigo: palotCode,
-        parcela_nombre: parcelaInfo?.nombre || parcelaNombre || '',
-        parcela_variedad: parcelaInfo?.variedad || '',
-        parcela_porcentaje: parcelaInfo?.porcentaje ?? parcelaPct ?? null,
-        parcela_nombre_interno: parcelaInfo?.nombre_interno || '',
-        sigpac_municipio: parcelaInfo?.sigpac_municipio || '',
-        sigpac_poligono: parcelaInfo?.sigpac_poligono || '',
-        sigpac_parcela: parcelaInfo?.sigpac_parcela || '',
-        sigpac_recinto: parcelaInfo?.sigpac_recinto || '',
-        kgs: normalizedKgs,
-        created_at: new Date().toISOString(),
-      });
-      await refreshAllData();
-      await loadRelPalots(parcelaId);
-      setSaveStatus('ok');
-      setMessage(msg || 'Guardado sin conexión. Se sincronizará al recuperar la red.');
-      setPalot('');
-      setOlivo('');
-      setParcelaNombre('');
-      setParcelaId(null);
-      setParcelaPct(null);
-      setPalotKgs('');
-      setStatus('idle');
-    };
-
-    try {
-      if (!isOnline) {
-        await saveOffline('Guardado sin conexión. Se sincronizará al recuperar la red.');
-        return;
-      }
-      const listRes = await fetch(`${apiBase}/palots`, { headers: { ...authHeaders } });
-      if (listRes.status === 401) {
-        const err = new Error('No autenticado');
-        err.status = 401;
-        throw err;
-      }
-      const palots = listRes.ok ? await listRes.json() : [];
-      let palotRow = palots.find(p => String(p.codigo) === palotCode);
-      if (!palotRow) {
-        const createRes = await fetch(`${apiBase}/palots`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...authHeaders },
-          body: JSON.stringify({ codigo: palotCode })
-        });
-        if (createRes.status === 401) {
-          const err = new Error('No autenticado');
-          err.status = 401;
-          throw err;
-        }
-        if (!createRes.ok) throw new Error('No se pudo crear el palot');
-        palotRow = await createRes.json();
-      }
-
-      const relRes = await fetch(`${apiBase}/parcelas/${parcelaId}/palots`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders },
-        body: JSON.stringify({ palot_id: palotRow.id, kgs: normalizedKgs })
-      });
-      if (relRes.status === 401) {
-        const err = new Error('No autenticado');
-        err.status = 401;
-        throw err;
-      }
-      if (!relRes.ok) {
-        const errBody = await relRes.json().catch(() => ({}));
-        throw new Error(errBody.error || 'No se pudo guardar la relación');
-      }
-      setSaveStatus('ok');
-      setMessage('Relación guardada correctamente.');
-      await runSync({ mode: 'pull' });
-      await loadRelPalots(parcelaId);
-      setPalot('');
-      setOlivo('');
-      setParcelaNombre('');
-      setParcelaId(null);
-      setParcelaPct(null);
-      setPalotKgs('');
-      setStatus('idle');
-    } catch (e) {
-      if (!isOnline || e.name === 'TypeError' || e.message === 'Failed to fetch' || e.message === 'network') {
-        await saveOffline('Guardado sin conexión. Se sincronizará al recuperar la red.');
-        return;
-      }
-      setSaveStatus('fail');
-      if (e.status === 401 || (e.message && e.message.includes('401'))) {
-        setMessage('No autenticado. Inicia sesión.');
-      } else {
-        setMessage(e.message || 'Error al guardar.');
-      }
-    }
+    await persistPalotCodes({
+      codes: palotCodes,
+      normalizedKgs,
+      parcelaInfoOverride: parcelaInfo,
+      successMessage: palotCodes.length > 1 ? `Relaciones guardadas para ${palotCodes.length} palots.` : 'Relación guardada correctamente.',
+      offlineMessage: 'Guardado sin conexión. Se sincronizará al recuperar la red.',
+      resetMode: 'full',
+    });
   };
 
+  const pendingPalotsCount = palotList.length + (String(palotInput ?? '').trim() ? 1 : 0);
+  const isOlivoLocked = palotList.length > 0 || saveStatus === 'saving';
+  const canSave = status === 'success' && !!parcelaId && pendingPalotsCount > 0 && saveStatus !== 'saving';
 
-  const canSave = status === 'success' && !!parcelaId && String(palot).trim() !== '' && saveStatus !== 'saving';
+  const addPalotToCustomList = () => {
+    const trimmed = String(palotInput ?? '').trim();
+    if (!trimmed) {
+      setPalotAddError('Introduce un número antes de añadir.');
+      return;
+    }
+    if (palotList.includes(trimmed)) {
+      setPalotAddError('Ese palot ya está en la lista.');
+      return;
+    }
+    setPalotList((prev) => [...prev, trimmed]);
+    setPalotInput('');
+    setPalotAddError('');
+  };
+
+  const handleQuickAdd = async () => {
+    if (saveStatus === 'saving') return;
+    if (!parcelaHasPct) {
+      addPalotToCustomList();
+      return;
+    }
+    setPalotAddError('');
+    if (!parcelaId) {
+      setSaveStatus('fail');
+      setMessage('Primero busca un olivo válido para obtener su parcela.');
+      return;
+    }
+    const trimmed = String(palotInput ?? '').trim();
+    if (!trimmed) {
+      setPalotAddError('Introduce un número antes de añadir.');
+      return;
+    }
+    const parcelaInfo = await getParcelaById(parcelaId).catch(() => null);
+    await persistPalotCodes({
+      codes: [trimmed],
+      normalizedKgs: DEFAULT_CEDENTE_KGS,
+      parcelaInfoOverride: parcelaInfo,
+      successMessage: `Palot ${trimmed} guardado con ${DEFAULT_CEDENTE_KGS} kgs.`,
+      offlineMessage: `Palot ${trimmed} guardado sin conexión (${DEFAULT_CEDENTE_KGS} kgs). Se sincronizará al recuperar la red.`,
+      resetMode: 'input',
+    });
+  };
+
+  const removePalotFromList = (index) => {
+    setPalotList((prev) => prev.filter((_, i) => i !== index));
+    setPalotAddError('');
+  };
 
   // Tabs for relations: today | previous
   const [relTab, setRelTab] = useState('today');
@@ -657,7 +829,15 @@ function App() {
 
   // Lista a mostrar según filtro de palot, ordenada por fecha creación desc
   const relsToShow = (allRels || [])
-    .filter((r) => String(r.palot_codigo || '').toLowerCase().includes(String(filterPalot || '').trim().toLowerCase()))
+    .filter((r) => {
+      const matchesPalot = String(r.palot_codigo || '').toLowerCase().includes(String(filterPalot || '').trim().toLowerCase());
+      if (!matchesPalot) return false;
+      if (showOwnPalotsOnly) {
+        const owner = String(r.created_by_username || r.created_by || '').trim().toLowerCase();
+        return owner && owner === String(authUser || '').trim().toLowerCase();
+      }
+      return true;
+    })
     .sort((a, b) => {
       const ad = a.created_at ? new Date(a.created_at).getTime() : 0;
       const bd = b.created_at ? new Date(b.created_at).getTime() : 0;
@@ -675,16 +855,22 @@ function App() {
     return { today, prev };
   }, [relsToShow]);
 
+  const palotKeyForState = (palotId, palotCodigo) => {
+    if (palotId != null && palotId !== '') return String(palotId);
+    return `code:${String(palotCodigo ?? '')}`;
+  };
+
   // Agrupar por palot
   const palotGroups = React.useMemo(() => {
     const base = relTab === 'today' ? relsByTab.today : relsByTab.prev;
-    const map = new Map(); // palot_id -> { palot_id, palot_codigo, items: [], hasPct: boolean }
+    const map = new Map(); // palot_id -> { palot_id, palot_codigo, items: [], hasPct: boolean, processed: boolean }
     for (const r of base) {
       const key = r.palot_id;
-      if (!map.has(key)) map.set(key, { palot_id: r.palot_id, palot_codigo: r.palot_codigo, items: [], hasPct: false });
+      if (!map.has(key)) map.set(key, { palot_id: r.palot_id, palot_codigo: r.palot_codigo, items: [], hasPct: false, processed: Boolean(r.palot_procesado) });
       const g = map.get(key);
       g.items.push(r);
       if (!g.hasPct && r.parcela_porcentaje != null && Number(r.parcela_porcentaje) > 0) g.hasPct = true;
+      if (!g.processed && r.palot_procesado) g.processed = Boolean(r.palot_procesado);
     }
     // Keep deterministic order: by palot code asc
     return Array.from(map.values()).sort((a, b) => String(a.palot_codigo).localeCompare(String(b.palot_codigo)));
@@ -698,6 +884,8 @@ function App() {
   }, [syncMessage]);
 
   const parcelaHasPct = parcelaPct != null && parcelaPct !== '' && !Number.isNaN(Number(parcelaPct)) && Number(parcelaPct) > 0;
+  const canManagePalots = authRole === 'admin' || authRole === 'molino' || authRole === 'patio';
+  const canExport = canManagePalots;
 
   const exportCsv = (mode) => {
     // Columnas: codigo_palot, id_parcela, nombre_parcela, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, parcela_variedad, parcela_porcentaje, kgs, fecha_creacion, creado_por
@@ -728,6 +916,37 @@ function App() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+  };
+
+  const handleTogglePalotProcessed = async ({ palotId, palotCodigo, processed }) => {
+    if (!canManagePalots || !authToken) return;
+    const numericId = Number(palotId);
+    if (!Number.isFinite(numericId)) return;
+    if (!isOnline) return;
+    const palotKey = palotKeyForState(palotId, palotCodigo);
+    setPalotProcessing((prev) => ({ ...prev, [palotKey]: 'saving' }));
+    try {
+      const res = await fetch(`${apiBase}/palots/${numericId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ procesado: !processed }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'No se pudo actualizar el estado');
+      }
+      await syncDown(apiBase, authHeaders);
+      await refreshAllData();
+      setLastSync(new Date().toISOString());
+      setPalotProcessing((prev) => {
+        const next = { ...prev };
+        delete next[palotKey];
+        return next;
+      });
+    } catch (err) {
+      console.error('Error actualizando procesado del palot', err);
+      setPalotProcessing((prev) => ({ ...prev, [palotKey]: 'error' }));
+    }
   };
 
   const handleKgsBlur = async (relation) => {
@@ -767,6 +986,48 @@ function App() {
       setTimeout(() => setKgSaveStatus((s) => ({ ...s, [relKey]: 'idle' })), 1200);
     } catch (e) {
       setKgSaveStatus((s) => ({ ...s, [relKey]: 'error' }));
+    }
+  };
+
+  const handleTogglePalotAderezoReservation = async ({ palotId, palotCodigo, relations }) => {
+    if (authRole !== 'campo') return;
+    const palotKey = palotKeyForState(palotId, palotCodigo);
+    const actionable = (relations || []).filter((rel) => !rel.pending && Number.isFinite(Number(rel?.id)));
+    if (!actionable.length) return;
+    if (!isOnline) return;
+
+    const currentlyReserved = actionable.every((rel) => Boolean(rel.reservado_aderezo));
+    const nextValue = !currentlyReserved;
+    const relationKeySet = new Set(actionable.map((rel) => getRelationKey(rel)));
+    const relationIdSet = new Set(actionable.map((rel) => Number(rel.id)));
+
+    setAderezoSaveStatus((s) => ({ ...s, [palotKey]: 'saving' }));
+    try {
+      await Promise.all(actionable.map((rel) => fetch(`${apiBase}/parcelas-palots/${Number(rel.id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ reservado_aderezo: nextValue })
+      }).then((res) => {
+        if (!res.ok) throw new Error('No se pudo actualizar la reserva');
+        return res.json().catch(() => ({}));
+      })));
+
+      const updateRows = (rows = []) => rows.map((row) => {
+        const key = getRelationKey(row);
+        if (relationKeySet.has(key) || relationIdSet.has(Number(row.id))) {
+          return { ...row, reservado_aderezo: nextValue };
+        }
+        return row;
+      });
+      setAllRels(updateRows);
+      setRelPalots(updateRows);
+      setAderezoSaveStatus((s) => ({ ...s, [palotKey]: 'ok' }));
+      setTimeout(() => {
+        setAderezoSaveStatus((s) => ({ ...s, [palotKey]: 'idle' }));
+      }, 1200);
+    } catch (err) {
+      console.error('Error actualizando reserva de aderezo', err);
+      setAderezoSaveStatus((s) => ({ ...s, [palotKey]: 'error' }));
     }
   };
 
@@ -880,7 +1141,11 @@ function App() {
             onChange={e => setOlivo(e.target.value)}
             placeholder="Ej. 123"
             inputMode="numeric"
+            disabled={isOlivoLocked}
           />
+          {isOlivoLocked && (
+            <span className="state warning">Nº de olivo bloqueado hasta guardar los palots pendientes.</span>
+          )}
           {status === 'waiting' && <span className="state muted">Esperando a terminar de escribir…</span>}
           {status === 'loading' && <span className="state muted">Buscando parcela…</span>}
           {status === 'success' && parcelaNombre && (
@@ -897,19 +1162,69 @@ function App() {
         <div className="divider" />
 
         <div className="row">
-          <label>Introduce un número de palot</label>
-          <input value={palot} onChange={e => setPalot(e.target.value)} placeholder="Ej. 42" inputMode="numeric" />
+          <label>Introduce números de palot</label>
+          <div className="palot-input-group">
+            <input
+              value={palotInput}
+              onChange={(e) => {
+                setPalotInput(e.target.value);
+                if (palotAddError) setPalotAddError('');
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  if (e.shiftKey || !parcelaHasPct) {
+                    addPalotToCustomList();
+                  } else {
+                    handleQuickAdd();
+                  }
+                }
+              }}
+              placeholder="Ej. 42"
+              inputMode="numeric"
+            />
+          </div>
+          <button
+            type="button"
+            className="btn-link"
+            onClick={addPalotToCustomList}
+          >
+            Añadir otro palot a esta parcela.
+          </button>
+          {palotAddError && <span className="state error" style={{ marginTop: '0.35rem' }}>{palotAddError}</span>}
+          {palotList.length > 0 && (
+            <div className="palot-chip-list">
+              {palotList.map((code, idx) => (
+                <span key={`${code}-${idx}`} className="palot-chip">
+                  <span className="palot-chip-code">{code}</span>
+                  <button type="button" className="palot-chip-remove" aria-label={`Eliminar palot ${code}`} onClick={() => removePalotFromList(idx)}>
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
 
         {parcelaHasPct && (
           <div className="row">
             <label>Introduce los kgs para esta parcela cedente</label>
-            <input
-              value={palotKgs}
-              onChange={(e) => setPalotKgs(e.target.value)}
-              placeholder="Ej. 1200"
-              inputMode="decimal"
-            />
+            <div className="kgs-input-group">
+              <input
+                value={palotKgs}
+                onChange={(e) => setPalotKgs(e.target.value)}
+                placeholder="Ej. 1200"
+                inputMode="decimal"
+              />
+              <button
+                type="button"
+                className="btn btn-outline btn-sm"
+                onClick={handleQuickAdd}
+                disabled={!String(palotInput ?? '').trim() || saveStatus === 'saving'}
+              >
+                Añadir completo
+              </button>
+            </div>
             <span className="muted">Se aplica porcentaje {String(parcelaPct)}%.</span>
           </div>
         )}
@@ -940,10 +1255,21 @@ function App() {
               <button className={`btn ${relTab === 'today' ? '' : 'btn-outline'}`} onClick={() => setRelTab('today')}>Hoy</button>
               <button className={`btn ${relTab === 'previous' ? '' : 'btn-outline'}`} onClick={() => setRelTab('previous')}>Anteriores</button>
             </div>
-            <div className="export-group">
-              <button className="btn btn-outline" onClick={() => exportCsv('today')} disabled={relsByTab.today.length === 0}>Exportar hoy</button>
-              <button className="btn btn-outline" onClick={() => exportCsv('all')} disabled={allRels.length === 0}>Exportar todo</button>
-            </div>
+            {authRole === 'campo' && (
+              <button
+                type="button"
+                className={`btn ${showOwnPalotsOnly ? '' : 'btn-outline'}`}
+                onClick={() => setShowOwnPalotsOnly((prev) => !prev)}
+              >
+                {showOwnPalotsOnly ? 'Todos los palots' : 'Mis palots'}
+              </button>
+            )}
+            {canExport && (
+              <div className="export-group">
+                <button className="btn btn-outline" onClick={() => exportCsv('today')} disabled={relsByTab.today.length === 0}>Exportar hoy</button>
+                <button className="btn btn-outline" onClick={() => exportCsv('all')} disabled={allRels.length === 0}>Exportar todo</button>
+              </div>
+            )}
           </div>
         </div>
 
@@ -967,6 +1293,32 @@ function App() {
             <div className="cells">
               {palotGroups.map((g) => {
                 const isCollapsed = !!collapsedPalots[g.palot_id];
+                const palotStateKey = palotKeyForState(g.palot_id, g.palot_codigo);
+                const processingState = palotProcessing[palotStateKey];
+                const isProcessing = processingState === 'saving';
+                const processingError = processingState === 'error';
+                const hasServerId = Number.isFinite(Number(g.palot_id));
+                const isProcessed = Boolean(g.processed);
+                const buttonDisabled = isProcessing || !hasServerId || !isOnline;
+                const buttonLabel = isProcessing ? 'Guardando…' : isProcessed ? 'Procesado ✓' : 'Procesado';
+                const buttonTitle = !hasServerId
+                  ? 'Disponible tras sincronizar este palot'
+                  : !isOnline
+                    ? 'Sin conexión. Conecta para actualizar.'
+                    : isProcessed
+                      ? 'Marcar como no procesado'
+                      : 'Marcar como procesado';
+                const canReservePalot = authRole === 'campo';
+                const palotReservationStatus = aderezoSaveStatus[palotStateKey] ?? 'idle';
+                const actionableRelations = (g.items || []).filter((rel) => !rel.pending && Number.isFinite(Number(rel?.id)));
+                const palotReserved = actionableRelations.length > 0 && actionableRelations.every((rel) => Boolean(rel.reservado_aderezo));
+                const palotReservationDisabled = palotReservationStatus === 'saving' || !isOnline || actionableRelations.length === 0;
+                const palotReservationLabel = palotReservationStatus === 'saving'
+                  ? 'Guardando…'
+                  : palotReserved
+                    ? 'Quitar reserva'
+                    : 'Reservar aderezo';
+                const showActions = canManagePalots || isProcessed || processingError || canReservePalot;
                 return (
                   <div key={g.palot_id} className={`cell ${isCollapsed ? 'cell-collapsed' : ''}`}>
                     <div className="cell-title">
@@ -982,7 +1334,52 @@ function App() {
                         Palot {g.palot_codigo}
                         <span className="muted" style={{ marginLeft: '0.5rem', fontSize: '0.8rem' }}>({g.items.length})</span>
                       </span>
+                      {(palotReserved || (g.items || []).some((rel) => Boolean(rel.reservado_aderezo))) && (
+                        <span className="pill pill-info" style={{ marginLeft: '0.5rem' }}>
+                          {authRole === 'molino' || authRole === 'patio' ? 'Guardar para aderezo' : 'Reservado para aderezo'}
+                        </span>
+                      )}
                       {g.hasPct && <span className="pill pill-warning">Parcela cedente</span>}
+                      {showActions && (
+                        <div className="cell-actions">
+                          {isProcessed && <span className="pill pill-success">Procesado</span>}
+                          {canManagePalots && (
+                            <button
+                              type="button"
+                              className={`btn btn-sm ${isProcessed ? 'btn-success' : 'btn-outline'}`}
+                              disabled={buttonDisabled}
+                              aria-pressed={isProcessed}
+                              title={buttonTitle}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                if (buttonDisabled) return;
+                                handleTogglePalotProcessed({ palotId: g.palot_id, palotCodigo: g.palot_codigo, processed: isProcessed });
+                              }}
+                            >
+                              {buttonLabel}
+                            </button>
+                          )}
+                          {canReservePalot && (
+                            <button
+                              type="button"
+                              className={`btn btn-sm ${palotReserved ? 'btn-success' : 'btn-outline'}`}
+                              disabled={palotReservationDisabled}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                if (palotReservationDisabled) return;
+                                handleTogglePalotAderezoReservation({ palotId: g.palot_id, palotCodigo: g.palot_codigo, relations: g.items });
+                              }}
+                            >
+                              {palotReservationLabel}
+                            </button>
+                          )}
+                          {canReservePalot && palotReservationStatus === 'ok' && <span className="state ok">OK</span>}
+                          {canReservePalot && palotReservationStatus === 'error' && <span className="state error">Error</span>}
+                          {processingError && (
+                            <span className="muted" style={{ color: '#b91c1c', fontWeight: 600 }}>Error</span>
+                          )}
+                        </div>
+                      )}
                     </div>
                     {!isCollapsed && (
                       <div className="cell-details">
@@ -996,7 +1393,7 @@ function App() {
                           return (
                             <div
                               key={r.id}
-                              className={`kv ${r.pending ? 'kv-pending-card' : ''}`}
+                              className={`kv ${r.pending ? 'kv-pending-card' : ''} ${hasPct ? 'kv-cedente' : ''}`}
                               onClick={() => setExpandedId(expandedId === r.id ? null : r.id)}
                             >
                               {r.pending && (
@@ -1102,7 +1499,7 @@ function UsersView({ apiBase, authHeaders, appVersion, dbUrl }) {
   const [status, setStatus] = React.useState('idle');
   const [u, setU] = React.useState('');
   const [p, setP] = React.useState('');
-  const [role, setRole] = React.useState('user');
+  const [role, setRole] = React.useState('campo');
   const [drafts, setDrafts] = React.useState({}); // {id: {username, role, password}}
 
   const load = async () => {
@@ -1111,10 +1508,10 @@ function UsersView({ apiBase, authHeaders, appVersion, dbUrl }) {
       const res = await fetch(`${apiBase}/users`, { headers: { ...authHeaders } });
       if (!res.ok) throw new Error('No autorizado o error');
       const data = await res.json();
-      const arr = Array.isArray(data) ? data : [];
+      const arr = Array.isArray(data) ? data.map(us => ({ ...us, role: normalizeRole(us.role) })) : [];
       setUsers(arr);
       const d = {};
-      for (const us of arr) d[us.id] = { username: us.username, role: us.role, password: '' };
+      for (const us of arr) d[us.id] = { username: us.username, role: normalizeRole(us.role), password: '' };
       setDrafts(d);
       setStatus('ready');
     } catch (e) {
@@ -1130,7 +1527,7 @@ function UsersView({ apiBase, authHeaders, appVersion, dbUrl }) {
       body: JSON.stringify({ username: u, password: p, role })
     });
     if (res.ok) {
-      setU(''); setP(''); setRole('user');
+      setU(''); setP(''); setRole('campo');
       load();
     } else {
       alert('No se pudo crear');
@@ -1154,8 +1551,9 @@ function UsersView({ apiBase, authHeaders, appVersion, dbUrl }) {
     });
     if (res.ok) {
       const updated = await res.json();
-      setUsers(list => list.map(x => x.id === id ? updated : x));
-      setDrafts(d0 => ({ ...d0, [id]: { username: updated.username, role: updated.role, password: '' } }));
+      const normalized = { ...updated, role: normalizeRole(updated.role) };
+      setUsers(list => list.map(x => x.id === id ? normalized : x));
+      setDrafts(d0 => ({ ...d0, [id]: { username: normalized.username, role: normalized.role, password: '' } }));
     } else {
       alert('No se pudo guardar cambios');
     }
@@ -1176,7 +1574,9 @@ function UsersView({ apiBase, authHeaders, appVersion, dbUrl }) {
           <input style={{ width: 160 }} placeholder="usuario" value={u} onChange={e => setU(e.target.value)} />
           <input style={{ width: 160 }} placeholder="contraseña" type="password" value={p} onChange={e => setP(e.target.value)} />
           <select value={role} onChange={e => setRole(e.target.value)}>
-            <option value="user">user</option>
+            <option value="campo">campo</option>
+            <option value="patio">patio</option>
+            <option value="molino">molino</option>
             <option value="admin">admin</option>
           </select>
           <button className="btn" onClick={createUser} disabled={!u || !p}>Crear</button>
@@ -1190,8 +1590,10 @@ function UsersView({ apiBase, authHeaders, appVersion, dbUrl }) {
           <div key={us.id} className="list-row" style={{ justifyContent: 'space-between' }}>
             <div className="controls">
               <input style={{ width: 160 }} value={drafts[us.id]?.username ?? ''} onChange={e => setDrafts(d => ({ ...d, [us.id]: { ...(d[us.id]||{}), username: e.target.value } }))} />
-              <select value={drafts[us.id]?.role ?? 'user'} onChange={e => setDrafts(d => ({ ...d, [us.id]: { ...(d[us.id]||{}), role: e.target.value } }))}>
-                <option value="user">user</option>
+              <select value={drafts[us.id]?.role ?? 'campo'} onChange={e => setDrafts(d => ({ ...d, [us.id]: { ...(d[us.id]||{}), role: e.target.value } }))}>
+                <option value="campo">campo</option>
+                <option value="patio">patio</option>
+                <option value="molino">molino</option>
                 <option value="admin">admin</option>
               </select>
               <input style={{ width: 160 }} placeholder="nueva contraseña" type="password" value={drafts[us.id]?.password ?? ''} onChange={e => setDrafts(d => ({ ...d, [us.id]: { ...(d[us.id]||{}), password: e.target.value } }))} />
@@ -1457,6 +1859,24 @@ function PalotsView({ apiBase, authHeaders }) {
     }
   };
 
+  const toggleProcesado = async (palot) => {
+    setMsg('');
+    try {
+      const res = await fetch(`${apiBase}/palots/${palot.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ procesado: !palot.procesado })
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Error al actualizar procesado');
+      }
+      load();
+    } catch (e) {
+      setMsg(e.message || 'Error');
+    }
+  };
+
   const remove = async (id) => {
     if (!confirm('¿Eliminar palot? (Se eliminarán sus relaciones)')) return;
     setMsg('');
@@ -1494,8 +1914,17 @@ function PalotsView({ apiBase, authHeaders }) {
         <div className="list">
           {rows.map(p => (
             <div key={p.id} className="list-row" style={{ justifyContent: 'space-between' }}>
-              <div><span className="name">#{p.id}</span> <span className="code">{p.codigo}</span></div>
+              <div>
+                <span className="name">#{p.id}</span> <span className="code">{p.codigo}</span>
+                {p.procesado && <span className="pill pill-success" style={{ marginLeft: '0.5rem' }}>Procesado</span>}
+              </div>
               <div className="controls">
+                <button
+                  className={`btn btn-sm ${p.procesado ? 'btn-success' : 'btn-outline'}`}
+                  onClick={() => toggleProcesado(p)}
+                >
+                  {p.procesado ? 'Procesado ✓' : 'Procesado'}
+                </button>
                 <button className="btn btn-outline" onClick={() => remove(p.id)}>Eliminar</button>
               </div>
             </div>

@@ -27,7 +27,8 @@ const SCHEMA_SQL_BASE = `
     id SERIAL PRIMARY KEY,
     codigo TEXT,
     id_usuario INTEGER,
-    kgs NUMERIC
+    kgs NUMERIC,
+    procesado BOOLEAN DEFAULT false
   );
 
   CREATE TABLE IF NOT EXISTS parcelas_palots (
@@ -36,6 +37,7 @@ const SCHEMA_SQL_BASE = `
     id_palot INTEGER REFERENCES palots(id),
     id_usuario INTEGER,
     kgs NUMERIC,
+    reservado_aderezo BOOLEAN DEFAULT false,
     created_at TIMESTAMPTZ DEFAULT now()
   );
 
@@ -43,7 +45,7 @@ const SCHEMA_SQL_BASE = `
     id SERIAL PRIMARY KEY,
     username TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
-    role TEXT DEFAULT 'user'
+    role TEXT DEFAULT 'campo'
   );
 `;
 
@@ -58,8 +60,10 @@ const SCHEMA_SQL_ALTER = `
   ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS porcentaje NUMERIC;
   ALTER TABLE IF EXISTS parcelas DROP COLUMN IF EXISTS id_usuario;
   ALTER TABLE IF EXISTS parcelas_palots ADD COLUMN IF NOT EXISTS kgs NUMERIC;
+  ALTER TABLE IF EXISTS parcelas_palots ADD COLUMN IF NOT EXISTS reservado_aderezo BOOLEAN DEFAULT false;
   ALTER TABLE IF EXISTS parcelas_palots ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
   ALTER TABLE IF EXISTS palots ADD COLUMN IF NOT EXISTS kgs NUMERIC;
+  ALTER TABLE IF EXISTS palots ADD COLUMN IF NOT EXISTS procesado BOOLEAN DEFAULT false;
   ALTER TABLE IF EXISTS olivos DROP COLUMN IF EXISTS variedad;
   ALTER TABLE IF EXISTS olivos DROP COLUMN IF EXISTS id_usuario;
 `;

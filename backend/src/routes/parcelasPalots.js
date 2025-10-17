@@ -2,18 +2,30 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 
+const toBool = (value) => {
+  if (value === true) return true;
+  if (value === false) return false;
+  if (typeof value === 'number') return value === 1;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    return ['1', 'true', 't', 'yes', 'si', 'sí', 'y'].includes(normalized);
+  }
+  return Boolean(value);
+};
+
 // Assign a palot to a parcela
 router.post('/parcelas/:parcelaId/palots', async (req, res) => {
   if (!req.userId) return res.status(401).json({ error: 'No autenticado' });
   const { parcelaId } = req.params;
-  const { palot_id, kgs } = req.body;
+  const { palot_id, kgs, reservado_aderezo } = req.body;
   if (!palot_id) {
     return res.status(400).json({ error: 'palot_id requerido' });
   }
   const userId = req.userId || null;
+  const reservadoValue = toBool(reservado_aderezo);
   const result = await db.public.one(
-    'INSERT INTO parcelas_palots(id_parcela, id_palot, id_usuario, kgs) VALUES($1, $2, $3, $4) RETURNING *',
-    [parcelaId, palot_id, userId, kgs ?? null]
+    'INSERT INTO parcelas_palots(id_parcela, id_palot, id_usuario, kgs, reservado_aderezo) VALUES($1, $2, $3, $4, $5) RETURNING *',
+    [parcelaId, palot_id, userId, kgs ?? null, reservadoValue]
   );
   res.status(201).json(result);
 });
@@ -61,7 +73,9 @@ router.get('/parcelas-palots', async (req, res) => {
               par.nombre_interno AS parcela_nombre_interno,
               p.id     AS palot_id,
               p.codigo AS palot_codigo,
+              p.procesado AS palot_procesado,
               pp.kgs   AS kgs,
+              pp.reservado_aderezo AS reservado_aderezo,
               pp.id_usuario AS created_by,
               u.username AS created_by_username,
               pp.created_at AS created_at
@@ -81,20 +95,40 @@ router.get('/parcelas-palots', async (req, res) => {
 router.patch('/parcelas-palots/:id', async (req, res) => {
   if (!req.userId) return res.status(401).json({ error: 'No autenticado' });
   const { id } = req.params;
-  const { kgs } = req.body;
-  // Allow null to clear, or numeric value
-  let value = null;
-  if (kgs !== undefined && kgs !== null && String(kgs).trim() !== '') {
-    const num = Number(kgs);
-    if (Number.isNaN(num)) {
-      return res.status(400).json({ error: 'kgs debe ser numérico' });
+  const { kgs, reservado_aderezo } = req.body || {};
+
+  const fields = [];
+  const params = [];
+  let idx = 1;
+
+  if (kgs !== undefined) {
+    let value = null;
+    if (kgs !== null && String(kgs).trim() !== '') {
+      const num = Number(kgs);
+      if (Number.isNaN(num)) {
+        return res.status(400).json({ error: 'kgs debe ser numérico' });
+      }
+      value = num;
     }
-    value = num;
+    fields.push(`kgs = $${idx++}`);
+    params.push(value);
   }
+
+  if (reservado_aderezo !== undefined) {
+    fields.push(`reservado_aderezo = $${idx++}`);
+    params.push(toBool(reservado_aderezo));
+  }
+
+  if (!fields.length) {
+    return res.status(400).json({ error: 'Sin cambios' });
+  }
+
+  params.push(id);
+
   try {
     const updated = await db.public.one(
-      'UPDATE parcelas_palots SET kgs = $2 WHERE id = $1 RETURNING *',
-      [id, value]
+      `UPDATE parcelas_palots SET ${fields.join(', ')} WHERE id = $${idx} RETURNING *`,
+      params
     );
     res.json(updated);
   } catch (e) {
