@@ -1659,7 +1659,14 @@ function OlivosView({ apiBase, authHeaders }) {
         body: JSON.stringify({ csv: oCsv })
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Error importando olivos');
+      if (!res.ok) {
+        const missingCols = Array.isArray(data.missing) ? data.missing : [];
+        const missingMsg = missingCols.length ? ` Faltan columnas: ${missingCols.join(', ')}` : '';
+        const detailMsg = data.details ? ` (${data.details})` : '';
+        setResult(data);
+        setMsg(`${data.error || 'Error importando olivos'}${missingMsg}${detailMsg}`);
+        return;
+      }
       setMsg(`OK: ${data.inserted ?? 0} olivos`);
       setResult(data);
       load();
@@ -1697,6 +1704,11 @@ function OlivosView({ apiBase, authHeaders }) {
           <button className="btn" onClick={doImport} disabled={!oCsv || busy}>Importar</button>
           {msg && <span className={`state ${msg.startsWith('OK') ? 'ok' : 'error'}`} style={{ marginLeft: '0.5rem' }}>{msg}</span>}
         </div>
+        {result?.missing?.length > 0 && (
+          <div className="list" style={{ marginTop: '0.5rem' }}>
+            <div className="list-row">Faltan columnas: {result.missing.join(', ')}</div>
+          </div>
+        )}
         {result?.errorsCount > 0 && (
           <div className="list" style={{ marginTop: '0.5rem' }}>
             {(result.errors || []).map((e, i) => (
@@ -1756,7 +1768,14 @@ function ParcelasView({ apiBase, authHeaders }) {
         body: JSON.stringify({ csv: pCsv })
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Error importando parcelas');
+      if (!res.ok) {
+        const missingCols = Array.isArray(data.missing) ? data.missing : [];
+        const missingMsg = missingCols.length ? ` Faltan columnas: ${missingCols.join(', ')}` : '';
+        const detailMsg = data.details ? ` (${data.details})` : '';
+        setResult(data);
+        setMsg(`${data.error || 'Error importando parcelas'}${missingMsg}${detailMsg}`);
+        return;
+      }
       setMsg(`OK: ${data.inserted ?? 0} parcelas`);
       setResult(data);
       load();
@@ -1794,6 +1813,11 @@ function ParcelasView({ apiBase, authHeaders }) {
           <button className="btn" onClick={doImport} disabled={!pCsv || busy}>Importar</button>
           {msg && <span className={`state ${msg.startsWith('OK') ? 'ok' : 'error'}`} style={{ marginLeft: '0.5rem' }}>{msg}</span>}
         </div>
+        {result?.missing?.length > 0 && (
+          <div className="list" style={{ marginTop: '0.5rem' }}>
+            <div className="list-row">Faltan columnas: {result.missing.join(', ')}</div>
+          </div>
+        )}
         {result?.errorsCount > 0 && (
           <div className="list" style={{ marginTop: '0.5rem' }}>
             {(result.errors || []).map((e, i) => (

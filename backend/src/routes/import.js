@@ -18,6 +18,14 @@ function normalizeKey(s) {
     .replace(/[\s\-]+/g, '_');
 }
 
+function pickCsvValue(row, names) {
+  for (const raw of names) {
+    const key = normalizeKey(raw);
+    if (row[key] !== undefined && row[key] !== '') return row[key];
+  }
+  return '';
+}
+
 function parseCsv(text) {
   if (!text || typeof text !== 'string') return { header: [], rows: [] };
   // Strip BOM if present
@@ -137,7 +145,7 @@ router.post('/import/parcelas', requireAuth, requireAdmin, async (req, res) => {
   if (rows.length === 0) return res.status(400).json({ error: 'CSV vacío' });
 
   // Validate required columns exist in CSV header
-  const requiredCsvNames = ['id','name','common-name','variety_id','SIGPAC_Municipio','SIGPAC_Poligono','SIGPAC_Parcela','SIGPAC_Recinto','contract_percentage'];
+  const requiredCsvNames = ['id','name','common_name','variety_id','SIGPAC_Provincia','SIGPAC_Municipio','SIGPAC_Poligono','SIGPAC_Parcela','SIGPAC_Recinto','contract_percentage'];
   const requiredNorm = requiredCsvNames.map(normalizeKey);
   const present = new Set(header);
   const missing = requiredNorm.filter(k => !present.has(k));
@@ -157,16 +165,17 @@ router.post('/import/parcelas', requireAuth, requireAdmin, async (req, res) => {
       errors.push(`Línea ${r._line}: id inválido "${r.id ?? ''}"`);
       continue;
     }
-    const nombre = r.nombre || null;
-    const sigpac_municipio = r.sigpac_municipio || null;
-    const sigpac_poligono = r.sigpac_poligono || null;
-    const sigpac_parcela = r.sigpac_parcela || null; // Nota: esperado en DB como sigpac_parcela
-    const sigpac_recinto = r.sigpac_recinto || null;
-    const variedad = r.variedad || null;
-    const nombre_interno = r.nombre_interno || null;
-    const porcentaje = r.porcentaje !== undefined && r.porcentaje !== '' ? Number(r.porcentaje) : null;
-    if (r.porcentaje !== undefined && r.porcentaje !== '' && Number.isNaN(porcentaje)) {
-      errors.push(`Línea ${r._line}: porcentaje inválido "${r.porcentaje}"`);
+    const nombre = pickCsvValue(r, ['nombre', 'name']) || null;
+    const sigpac_municipio = pickCsvValue(r, ['sigpac_municipio']) || null;
+    const sigpac_poligono = pickCsvValue(r, ['sigpac_poligono']) || null;
+    const sigpac_parcela = pickCsvValue(r, ['sigpac_parcela']) || null; // Nota: esperado en DB como sigpac_parcela
+    const sigpac_recinto = pickCsvValue(r, ['sigpac_recinto']) || null;
+    const variedad = pickCsvValue(r, ['variedad', 'variety_id']) || null;
+    const nombre_interno = pickCsvValue(r, ['nombre_interno', 'common_name']) || null;
+    const porcentajeRaw = pickCsvValue(r, ['porcentaje', 'contract_percentage']);
+    const porcentaje = porcentajeRaw !== '' ? Number(porcentajeRaw) : null;
+    if (porcentajeRaw !== '' && Number.isNaN(porcentaje)) {
+      errors.push(`Línea ${r._line}: porcentaje inválido "${porcentajeRaw}"`);
       continue;
     }
     if (!nombre) {
@@ -174,7 +183,7 @@ router.post('/import/parcelas', requireAuth, requireAdmin, async (req, res) => {
       continue;
     }
     await db.public.none(
-        `INSERT INTO parcelas(id, name, SIGPAC_Municipio, SIGPAC_Poligono, SIGPAC_Parcela, SIGPAC_Recinto, variety_id, common_name, porcentaje)
+        `INSERT INTO parcelas(id, nombre, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, variedad, nombre_interno, porcentaje)
          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
          ON CONFLICT (id) DO UPDATE SET
            nombre = COALESCE(EXCLUDED.nombre, parcelas.nombre),
@@ -216,59 +225,74 @@ router.post('/import/palots', requireAuth, requireAdmin, async (req, res) => {
 });
 
 router.post('/import/olivos', requireAuth, requireAdmin, async (req, res) => {
-  const { csv } = req.body || {};
-  if (!csv) return res.status(400).json({ error: 'csv requerido' });
-  const { header, rows } = parseCsv(csv);
-  if (rows.length === 0) return res.status(400).json({ error: 'CSV vacío' });
+  try {
+    const { csv } = req.body || {};
+    if (!csv) return res.status(400).json({ error: 'csv requerido' });
+    const { header, rows } = parseCsv(csv);
+    if (rows.length === 0) return res.status(400).json({ error: 'CSV vacío' });
 
-  // Validate required columns
-  const required = ['id', 'id_parcela'];
-  const present = new Set(header);
-  const missing = required.filter(k => !present.has(k));
-  if (missing.length > 0) return res.status(400).json({ error: 'Faltan columnas en CSV', missing });
+    // Validate required columns (allowing simple aliases)
+    const requiredOptions = [
+      ['id'],
+      ['id_parcela', 'parcela_id'],
+    ];
+    const present = new Set(header);
+    const missing = requiredOptions
+      .filter((opts) => !opts.some((name) => present.has(normalizeKey(name))))
+      .map((opts) => opts[0]);
+    if (missing.length > 0) return res.status(400).json({ error: 'Faltan columnas en CSV', missing });
 
-  // Preload existing parcelas to avoid FK errors and give clearer messages
-  const neededParcelaIds = Array.from(new Set(rows
-    .map(r => (r.id_parcela !== undefined && r.id_parcela !== '' ? parseInt(r.id_parcela, 10) : null))
-    .filter((v) => Number.isInteger(v))));
-  let existingParcelaIds = new Set();
-  if (neededParcelaIds.length > 0) {
-    try {
-      const found = await db.public.many('SELECT id FROM parcelas WHERE id = ANY($1)', [neededParcelaIds]);
-      existingParcelaIds = new Set(found.map(r => r.id));
-    } catch (_) {
-      existingParcelaIds = new Set();
-    }
-  }
-
-  let inserted = 0;
-  const errors = [];
-  for (const r of rows) {
-    const id = r.id !== undefined && r.id !== '' ? parseInt(r.id, 10) : null;
-    const id_parcela = r.id_parcela !== undefined && r.id_parcela !== '' ? parseInt(r.id_parcela, 10) : null;
-    if (!Number.isInteger(id_parcela)) {
-      errors.push(`Línea ${r._line}: id_parcela inválido "${r.id_parcela ?? ''}"`);
-      continue;
-    }
-    if (!existingParcelaIds.has(id_parcela)) {
-      errors.push(`Línea ${r._line}: id_parcela ${id_parcela} no existe en parcelas (importa parcelas primero)`);
-      continue;
-    }
-    try {
-      if (Number.isInteger(id)) {
-        await db.public.none(
-          'INSERT INTO olivos(id, id_parcela) VALUES($1, $2) ON CONFLICT (id) DO UPDATE SET id_parcela = EXCLUDED.id_parcela',
-          [id, id_parcela]
-        );
-      } else {
-        await db.public.none('INSERT INTO olivos(id_parcela) VALUES($1)', [id_parcela]);
+    // Preload existing parcelas to avoid FK errors and give clearer messages
+    const neededParcelaIds = Array.from(new Set(rows
+      .map((r) => {
+        const raw = pickCsvValue(r, ['id_parcela', 'parcela_id']);
+        return raw !== '' ? parseInt(raw, 10) : null;
+      })
+      .filter((v) => Number.isInteger(v))));
+    let existingParcelaIds = new Set();
+    if (neededParcelaIds.length > 0) {
+      try {
+        const found = await db.public.many('SELECT id FROM parcelas WHERE id = ANY($1)', [neededParcelaIds]);
+        existingParcelaIds = new Set(found.map((r) => r.id));
+      } catch (_) {
+        existingParcelaIds = new Set();
       }
-      inserted++;
-    } catch (e) {
-      errors.push(`Línea ${r._line}: error BD ${e.code || ''} ${e.message || e}`);
     }
+
+    let inserted = 0;
+    const errors = [];
+    for (const r of rows) {
+      const idRaw = pickCsvValue(r, ['id']);
+      const id = idRaw !== '' ? parseInt(idRaw, 10) : null;
+      const parcelaRaw = pickCsvValue(r, ['id_parcela', 'parcela_id']);
+      const id_parcela = parcelaRaw !== '' ? parseInt(parcelaRaw, 10) : null;
+      if (!Number.isInteger(id_parcela)) {
+        errors.push(`Línea ${r._line}: id_parcela inválido "${parcelaRaw}"`);
+        continue;
+      }
+      if (!existingParcelaIds.has(id_parcela)) {
+        errors.push(`Línea ${r._line}: id_parcela ${id_parcela} no existe en parcelas (importa parcelas primero)`);
+        continue;
+      }
+      try {
+        if (Number.isInteger(id)) {
+          await db.public.none(
+            'INSERT INTO olivos(id, id_parcela) VALUES($1, $2) ON CONFLICT (id) DO UPDATE SET id_parcela = EXCLUDED.id_parcela',
+            [id, id_parcela]
+          );
+        } else {
+          await db.public.none('INSERT INTO olivos(id_parcela) VALUES($1)', [id_parcela]);
+        }
+        inserted++;
+      } catch (e) {
+        errors.push(`Línea ${r._line}: error BD ${e.code || ''} ${e.message || e}`);
+      }
+    }
+    res.json({ ok: true, inserted, errorsCount: errors.length, errors: errors.slice(0, 50) });
+  } catch (e) {
+    console.error('Import olivos error', e);
+    res.status(500).json({ error: 'Error importando olivos', details: e.message || String(e) });
   }
-  res.json({ ok: true, inserted, errorsCount: errors.length, errors: errors.slice(0, 50) });
 });
 
 module.exports = router;
