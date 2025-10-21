@@ -18,6 +18,8 @@ import {
 import { syncAll, syncDown, syncUp } from './offline/sync';
 
 const DEFAULT_CEDENTE_KGS = 300;
+const toStringSafe = (value) => String(value === undefined || value === null ? '' : value);
+const coalesce = (value, fallback) => (value === undefined || value === null ? fallback : value);
 
 const normalizeRole = (role) => {
   if (!role) return '';
@@ -34,6 +36,7 @@ function App() {
   const [palotInput, setPalotInput] = useState('');
   const [palotList, setPalotList] = useState([]);
   const [palotKgs, setPalotKgs] = useState('');
+  const [parcelaNotas, setParcelaNotas] = useState('');
   const [palotAddError, setPalotAddError] = useState('');
   const [showOwnPalotsOnly, setShowOwnPalotsOnly] = useState(false);
   const [olivo, setOlivo] = useState('');
@@ -78,9 +81,9 @@ function App() {
         if (cancelled) return;
         setOfflineReady(true);
         const session = await loadAuthSession().catch(() => null);
-        let token = session?.token || '';
-        let username = session?.username || '';
-        let role = session?.role || '';
+        let token = session && session.token ? session.token : '';
+        let username = session && session.username ? session.username : '';
+        let role = session && session.role ? session.role : '';
         if (!token) {
           const legacyToken = localStorage.getItem('authToken');
           const legacyUser = localStorage.getItem('authUser');
@@ -102,7 +105,7 @@ function App() {
         if (!cancelled) setPendingCount(pending.length);
       } catch (_) {}
       if (cancelled) return;
-      const initialPath = window.location?.pathname || '/';
+      const initialPath = (typeof window !== 'undefined' && window.location && window.location.pathname) ? window.location.pathname : '/';
       if (initialPath === '/logout') {
         clearToken();
         if (window.history && window.location) {
@@ -116,7 +119,7 @@ function App() {
     bootstrap();
 
     const onPop = () => {
-      const p = window.location?.pathname || '/';
+      const p = (typeof window !== 'undefined' && window.location && window.location.pathname) ? window.location.pathname : '/';
       if (p === '/logout') {
         clearToken();
         if (window.history && window.location) {
@@ -160,7 +163,9 @@ function App() {
       if (v.appVersion || v.version) {
         setAppVersion(v.appVersion || v.version);
       }
-      const safeDb = v?.details?.db?.safe || v?.details?.db?.url || '';
+      const details = v && v.details ? v.details : {};
+      const dbDetails = details.db || {};
+      const safeDb = dbDetails.safe || dbDetails.url || '';
       if (safeDb) setDbUrl(safeDb);
     }).catch(() => {});
     return () => { cancelled = true; };
@@ -205,13 +210,13 @@ function App() {
       const res = await fetch(`${apiBase}/me`, { headers: { Authorization: `Basic ${token}` } });
       if (!res.ok) throw new Error('Credenciales no válidas');
       const me = await res.json();
-      await applySession({ username: u, token, role: me?.role || '' });
+      await applySession({ username: u, token, role: me && me.role ? me.role : '' });
       setAuthPass('');
       await runSync();
     } catch (err) {
       if (err.message === 'offline-login') {
         setLoginError('Necesitas autenticarte en línea al menos una vez.');
-      } else if (err?.status === 401) {
+      } else if (err && err.status === 401) {
         setLoginError('Credenciales incorrectas.');
       } else if (!isOnline) {
         setLoginError('Sin conexión. Guarda tus credenciales online primero.');
@@ -270,6 +275,7 @@ function App() {
       setParcelaId(null);
       setParcelaPct(null);
       setPalotKgs('');
+      setParcelaNotas('');
       return;
     }
 
@@ -305,16 +311,18 @@ function App() {
           throw new Error('No encontrado');
         }
         setParcelaNombre(parcelaData.nombre || '');
-        setParcelaId(parcelaData.id ?? null);
-        setParcelaPct(parcelaData.porcentaje ?? null);
+        setParcelaId(parcelaData && parcelaData.id !== undefined ? parcelaData.id : null);
+        setParcelaPct(parcelaData && parcelaData.porcentaje !== undefined ? parcelaData.porcentaje : null);
         setPalotKgs('');
+        setParcelaNotas('');
         setStatus('success');
-        loadRelPalots(parcelaData.id ?? null);
+        loadRelPalots(parcelaData && parcelaData.id !== undefined ? parcelaData.id : null);
       } catch (err) {
         setParcelaNombre('');
         setParcelaId(null);
         setParcelaPct(null);
         setPalotKgs('');
+        setParcelaNotas('');
         setStatus('error');
         loadRelPalots(null);
       }
@@ -471,7 +479,7 @@ function App() {
         clearTimeout(syncTimeoutRef.current);
         syncTimeoutRef.current = null;
       }
-      setSyncMessage(err?.message ? `Error al eliminar: ${err.message}` : 'Error al eliminar la relación.');
+      setSyncMessage(err && err.message ? `Error al eliminar: ${err.message}` : 'Error al eliminar la relación.');
     }
   };
 
@@ -479,7 +487,10 @@ function App() {
     if (!relation) return '';
     if (relation.id !== undefined && relation.id !== null) return String(relation.id);
     if (relation.key) return String(relation.key);
-    return `${relation.parcela_id ?? 'p'}-${relation.palot_id ?? 'palot'}-${relation.created_at ?? 'unknown'}`;
+    const parcelaPart = relation && relation.parcela_id !== undefined && relation.parcela_id !== null ? relation.parcela_id : 'p';
+    const palotPart = relation && relation.palot_id !== undefined && relation.palot_id !== null ? relation.palot_id : 'palot';
+    const createdPart = relation && relation.created_at ? relation.created_at : 'unknown';
+    return `${parcelaPart}-${palotPart}-${createdPart}`;
   };
 
   const parseKgsInput = (value) => {
@@ -498,7 +509,10 @@ function App() {
   };
 
   const togglePalotCollapse = (palotId) => {
-    setCollapsedPalots((prev) => ({ ...prev, [palotId]: !prev[palotId] }));
+    setCollapsedPalots((prev) => {
+      const isCollapsed = prev[palotId] !== false;
+      return { ...prev, [palotId]: !isCollapsed };
+    });
   };
 
   const persistPalotCodes = async ({
@@ -516,7 +530,18 @@ function App() {
       return { ok: false, reason: 'no-codes' };
     }
 
-    const parcelaInfo = parcelaInfoOverride ?? (await getParcelaById(parcelaId).catch(() => null));
+    const rawNotes = String(parcelaNotas != null ? parcelaNotas : '');
+    const hasNotes = rawNotes.trim().length > 0;
+
+    const parcelaInfo = await (async () => {
+      if (parcelaInfoOverride) return parcelaInfoOverride;
+      try {
+        return await getParcelaById(parcelaId);
+      } catch (_) {
+        return null;
+      }
+    })();
+    const parcelaInfoSafe = parcelaInfo || {};
     const defaultSuccessMsg = uniqueCodes.length > 1
       ? `Relaciones guardadas para ${uniqueCodes.length} palots.`
       : 'Relación guardada correctamente.';
@@ -536,17 +561,14 @@ function App() {
         setParcelaId(null);
         setParcelaPct(null);
         setPalotKgs('');
+        setParcelaNotas('');
         setStatus('idle');
       } else if (resetMode === 'input') {
         setPalotList((prev) => prev.filter((code) => !uniqueCodes.includes(code)));
         setPalotInput('');
         setPalotAddError('');
-        setOlivo('');
-        setParcelaNombre('');
-        setParcelaId(null);
-        setParcelaPct(null);
         setPalotKgs('');
-        setStatus('idle');
+        setStatus('success');
       }
     };
 
@@ -555,6 +577,13 @@ function App() {
         setPalotList(remaining);
         setPalotInput(remaining[0] || '');
       } else if (resetMode === 'input') {
+        setPalotList((prev) => {
+          const base = prev.filter((code) => !uniqueCodes.includes(code));
+          for (const code of remaining) {
+            if (!base.includes(code)) base.push(code);
+          }
+          return base;
+        });
         setPalotInput(remaining[0] || '');
         setPalotAddError('');
       }
@@ -571,16 +600,17 @@ function App() {
         await enqueueRelation({
           parcela_id: parcelaId,
           palot_codigo: palotCode,
-          parcela_nombre: parcelaInfo?.nombre || parcelaNombre || '',
-          parcela_variedad: parcelaInfo?.variedad || '',
-          parcela_porcentaje: parcelaInfo?.porcentaje ?? parcelaPct ?? null,
-          parcela_nombre_interno: parcelaInfo?.nombre_interno || '',
-          sigpac_municipio: parcelaInfo?.sigpac_municipio || '',
-          sigpac_poligono: parcelaInfo?.sigpac_poligono || '',
-          sigpac_parcela: parcelaInfo?.sigpac_parcela || '',
-          sigpac_recinto: parcelaInfo?.sigpac_recinto || '',
+          parcela_nombre: parcelaInfoSafe.nombre || parcelaNombre || '',
+          parcela_variedad: parcelaInfoSafe.variedad || '',
+          parcela_porcentaje: parcelaInfoSafe.porcentaje != null ? parcelaInfoSafe.porcentaje : (parcelaPct != null ? parcelaPct : null),
+          parcela_nombre_interno: parcelaInfoSafe.nombre_interno || '',
+          sigpac_municipio: parcelaInfoSafe.sigpac_municipio || '',
+          sigpac_poligono: parcelaInfoSafe.sigpac_poligono || '',
+          sigpac_parcela: parcelaInfoSafe.sigpac_parcela || '',
+          sigpac_recinto: parcelaInfoSafe.sigpac_recinto || '',
           kgs: normalizedKgs,
           reservado_aderezo: false,
+          notas: hasNotes ? rawNotes : '',
           created_at: new Date().toISOString(),
           created_by: authUser || '',
           created_by_username: authUser || '',
@@ -635,7 +665,12 @@ function App() {
         const relRes = await fetch(`${apiBase}/parcelas/${parcelaId}/palots`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...authHeaders },
-          body: JSON.stringify({ palot_id: palotRow.id, kgs: normalizedKgs, reservado_aderezo: false })
+          body: JSON.stringify({
+            palot_id: palotRow.id,
+            kgs: normalizedKgs,
+            reservado_aderezo: false,
+            notas: hasNotes ? rawNotes : null,
+          })
         });
         if (relRes.status === 401) {
           const err = new Error('No autenticado');
@@ -682,6 +717,7 @@ function App() {
     }
   };
 
+
   const handleSave = async () => {
     setMessage('');
     setPalotAddError('');
@@ -691,7 +727,7 @@ function App() {
       return;
     }
 
-    const typedCode = String(palotInput ?? '').trim();
+    const typedCode = toStringSafe(palotInput).trim();
     const palotCodes = [];
     const pushCode = (raw) => {
       if (raw === null || raw === undefined) return;
@@ -712,24 +748,30 @@ function App() {
       setPalotList((prev) => (prev.includes(typedCode) ? prev : [...prev, typedCode]));
     }
 
-    const parcelaInfo = await getParcelaById(parcelaId).catch(() => null);
-    const parcelaPercent = parcelaInfo?.porcentaje ?? parcelaPct;
-    const hasPct = parcelaPercent != null && parcelaPercent !== '' && !Number.isNaN(Number(parcelaPercent)) && Number(parcelaPercent) > 0;
+    let parcelaInfo = null;
+    try {
+      parcelaInfo = await getParcelaById(parcelaId);
+    } catch (_) {
+      parcelaInfo = null;
+    }
+    const rawPercent = parcelaInfo && parcelaInfo.porcentaje !== undefined ? parcelaInfo.porcentaje : parcelaPct;
+    const hasPct = rawPercent != null && rawPercent !== '' && !Number.isNaN(Number(rawPercent)) && Number(rawPercent) > 0;
     const rawKgsInput = hasPct ? palotKgs : '';
     const parsedKgs = parseKgsInput(rawKgsInput);
     let normalizedKgs = null;
 
     if (hasPct) {
-      if (parsedKgs.hasValue) {
-        if (!parsedKgs.valid) {
-          setSaveStatus('fail');
-          setMessage('Introduce un valor numérico en Kgs.');
-          return;
-        }
-        normalizedKgs = parsedKgs.value;
-      } else {
-        normalizedKgs = DEFAULT_CEDENTE_KGS;
+      if (!parsedKgs.hasValue) {
+        setSaveStatus('fail');
+        setMessage('Introduce un valor numérico en Kgs.');
+        return;
       }
+      if (!parsedKgs.valid) {
+        setSaveStatus('fail');
+        setMessage('Introduce un valor numérico en Kgs.');
+        return;
+      }
+      normalizedKgs = parsedKgs.value;
     } else if (parsedKgs.hasValue) {
       if (!parsedKgs.valid) {
         setSaveStatus('fail');
@@ -749,12 +791,19 @@ function App() {
     });
   };
 
-  const pendingPalotsCount = palotList.length + (String(palotInput ?? '').trim() ? 1 : 0);
+  const parcelaHasPct = parcelaPct != null && parcelaPct !== '' && !Number.isNaN(Number(parcelaPct)) && Number(parcelaPct) > 0;
+
+  const pendingPalotsCount = palotList.length + (toStringSafe(palotInput).trim() ? 1 : 0);
   const isOlivoLocked = palotList.length > 0 || saveStatus === 'saving';
-  const canSave = status === 'success' && !!parcelaId && pendingPalotsCount > 0 && saveStatus !== 'saving';
+  const palotKgsTrimmed = toStringSafe(palotKgs).trim();
+  const canSave = status === 'success'
+    && !!parcelaId
+    && pendingPalotsCount > 0
+    && saveStatus !== 'saving'
+    && (!parcelaHasPct || palotKgsTrimmed !== '');
 
   const addPalotToCustomList = () => {
-    const trimmed = String(palotInput ?? '').trim();
+    const trimmed = toStringSafe(palotInput).trim();
     if (!trimmed) {
       setPalotAddError('Introduce un número antes de añadir.');
       return;
@@ -768,32 +817,41 @@ function App() {
     setPalotAddError('');
   };
 
-  const handleQuickAdd = async () => {
+  const handleQuickAdd = () => {
     if (saveStatus === 'saving') return;
+    const trimmed = toStringSafe(palotInput).trim();
+    if (!trimmed) {
+      setPalotAddError('Introduce un número antes de añadir.');
+      return;
+    }
     if (!parcelaHasPct) {
       addPalotToCustomList();
       return;
     }
-    setPalotAddError('');
+    if (palotList.includes(trimmed)) {
+      setPalotAddError('Ese palot ya está en la lista.');
+      return;
+    }
     if (!parcelaId) {
       setSaveStatus('fail');
       setMessage('Primero busca un olivo válido para obtener su parcela.');
       return;
     }
-    const trimmed = String(palotInput ?? '').trim();
-    if (!trimmed) {
-      setPalotAddError('Introduce un número antes de añadir.');
-      return;
-    }
-    const parcelaInfo = await getParcelaById(parcelaId).catch(() => null);
-    await persistPalotCodes({
-      codes: [trimmed],
-      normalizedKgs: DEFAULT_CEDENTE_KGS,
-      parcelaInfoOverride: parcelaInfo,
-      successMessage: `Palot ${trimmed} guardado con ${DEFAULT_CEDENTE_KGS} kgs.`,
-      offlineMessage: `Palot ${trimmed} guardado sin conexión (${DEFAULT_CEDENTE_KGS} kgs). Se sincronizará al recuperar la red.`,
-      resetMode: 'input',
-    });
+    setPalotAddError('');
+    setPalotKgs(String(DEFAULT_CEDENTE_KGS));
+    getParcelaById(parcelaId)
+      .catch(() => null)
+      .then((parcelaInfo) => persistPalotCodes({
+        codes: [trimmed],
+        normalizedKgs: DEFAULT_CEDENTE_KGS,
+        parcelaInfoOverride: parcelaInfo,
+        successMessage: `Palot ${trimmed} guardado con ${DEFAULT_CEDENTE_KGS} kgs.`,
+        offlineMessage: `Palot ${trimmed} guardado sin conexión (${DEFAULT_CEDENTE_KGS} kgs). Se sincronizará al recuperar la red.`,
+        resetMode: 'input',
+      }))
+      .then(() => {
+        setPalotKgs(String(DEFAULT_CEDENTE_KGS));
+      });
   };
 
   const removePalotFromList = (index) => {
@@ -857,7 +915,7 @@ function App() {
 
   const palotKeyForState = (palotId, palotCodigo) => {
     if (palotId != null && palotId !== '') return String(palotId);
-    return `code:${String(palotCodigo ?? '')}`;
+    return `code:${toStringSafe(palotCodigo)}`;
   };
 
   // Agrupar por palot
@@ -883,14 +941,13 @@ function App() {
     return 'state error';
   }, [syncMessage]);
 
-  const parcelaHasPct = parcelaPct != null && parcelaPct !== '' && !Number.isNaN(Number(parcelaPct)) && Number(parcelaPct) > 0;
   const canManagePalots = authRole === 'admin' || authRole === 'molino' || authRole === 'patio';
   const canExport = canManagePalots;
 
   const exportCsv = (mode) => {
-    // Columnas: codigo_palot, id_parcela, nombre_parcela, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, parcela_variedad, parcela_porcentaje, kgs, fecha_creacion, creado_por
-    const header = ['codigo_palot', 'id_parcela', 'nombre_parcela', 'sigpac_municipio', 'sigpac_poligono', 'sigpac_parcela', 'sigpac_recinto', 'parcela_variedad', 'parcela_porcentaje', 'kgs', 'fecha_creacion', 'creado_por'];
-    const escape = (v) => '"' + String(v ?? '').replaceAll('"', '""') + '"';
+    // Columnas: codigo_palot, id_parcela, nombre_parcela, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, parcela_variedad, parcela_porcentaje, kgs, procesado, fecha_creacion, creado_por
+    const header = ['codigo_palot', 'id_parcela', 'nombre_parcela', 'sigpac_municipio', 'sigpac_poligono', 'sigpac_parcela', 'sigpac_recinto', 'parcela_variedad', 'parcela_porcentaje', 'kgs', 'procesado', 'fecha_creacion', 'creado_por', 'notas'];
+    const escape = (v) => '"' + toStringSafe(v).replaceAll('"', '""') + '"';
     const source = mode === 'today' ? relsByTab.today : allRels;
     const rows = (source || []).map(r => [
       r.palot_codigo,
@@ -903,8 +960,10 @@ function App() {
       r.parcela_variedad || '',
       r.parcela_porcentaje != null ? r.parcela_porcentaje : '',
       r.kgs != null ? r.kgs : '',
+      r.palot_procesado ? '1' : '0',
       r.created_at ? new Date(r.created_at).toISOString() : '',
-      r.created_by_username || r.created_by || ''
+      r.created_by_username || r.created_by || '',
+      toStringSafe(r.notas).replace(/\r?\n/g, ' ').trim()
     ]);
     const csv = [header.join(','), ...rows.map(r => r.map(escape).join(','))].join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -952,7 +1011,7 @@ function App() {
   const handleKgsBlur = async (relation) => {
     const relKey = getRelationKey(relation);
     if (!relKey) return;
-    const draftValue = kgsDraft[relKey] ?? '';
+    const draftValue = coalesce(kgsDraft[relKey], '');
     const parsed = parseKgsInput(draftValue);
     if (parsed.hasValue && !parsed.valid) {
       setKgSaveStatus((s) => ({ ...s, [relKey]: 'error' }));
@@ -961,10 +1020,10 @@ function App() {
 
     const newVal = parsed.hasValue && parsed.valid ? parsed.value : null;
     const nextDraftValue = parsed.hasValue && parsed.valid ? String(parsed.value) : '';
-    const numericId = Number(relation?.id);
+    const numericId = Number(relation && relation.id);
     if (Number.isNaN(numericId)) return;
 
-    const existingVal = relation?.kgs == null ? null : Number(relation.kgs);
+    const existingVal = relation && relation.kgs != null ? Number(relation.kgs) : null;
     if ((!parsed.hasValue && existingVal == null) || (parsed.hasValue && parsed.valid && existingVal === newVal)) {
       setKgsDraft((s) => ({ ...s, [relKey]: nextDraftValue }));
       setKgSaveStatus((s) => ({ ...s, [relKey]: 'idle' }));
@@ -992,7 +1051,7 @@ function App() {
   const handleTogglePalotAderezoReservation = async ({ palotId, palotCodigo, relations }) => {
     if (authRole !== 'campo') return;
     const palotKey = palotKeyForState(palotId, palotCodigo);
-    const actionable = (relations || []).filter((rel) => !rel.pending && Number.isFinite(Number(rel?.id)));
+    const actionable = (relations || []).filter((rel) => !rel.pending && Number.isFinite(Number(rel && rel.id)));
     if (!actionable.length) return;
     if (!isOnline) return;
 
@@ -1184,13 +1243,6 @@ function App() {
               inputMode="numeric"
             />
           </div>
-          <button
-            type="button"
-            className="btn-link"
-            onClick={addPalotToCustomList}
-          >
-            Añadir otro palot a esta parcela.
-          </button>
           {palotAddError && <span className="state error" style={{ marginTop: '0.35rem' }}>{palotAddError}</span>}
           {palotList.length > 0 && (
             <div className="palot-chip-list">
@@ -1220,7 +1272,7 @@ function App() {
                 type="button"
                 className="btn btn-outline btn-sm"
                 onClick={handleQuickAdd}
-                disabled={!String(palotInput ?? '').trim() || saveStatus === 'saving'}
+                disabled={!toStringSafe(palotInput).trim() || saveStatus === 'saving'}
               >
                 Añadir completo
               </button>
@@ -1228,6 +1280,18 @@ function App() {
             <span className="muted">Se aplica porcentaje {String(parcelaPct)}%.</span>
           </div>
         )}
+
+        <div className="row">
+          <label htmlFor="relation-notes">Notas</label>
+          <textarea
+            id="relation-notes"
+            value={parcelaNotas}
+            onChange={(e) => setParcelaNotas(e.target.value)}
+            placeholder="Añade una nota sobre la parcela"
+            rows={2}
+            disabled={saveStatus === 'saving'}
+          />
+        </div>
 
         <div className="controls">
           <button className="btn" onClick={handleSave} disabled={!canSave}>
@@ -1292,7 +1356,7 @@ function App() {
           {palotGroups.length > 0 && (
             <div className="cells">
               {palotGroups.map((g) => {
-                const isCollapsed = !!collapsedPalots[g.palot_id];
+                const isCollapsed = collapsedPalots[g.palot_id] !== false;
                 const palotStateKey = palotKeyForState(g.palot_id, g.palot_codigo);
                 const processingState = palotProcessing[palotStateKey];
                 const isProcessing = processingState === 'saving';
@@ -1309,8 +1373,8 @@ function App() {
                       ? 'Marcar como no procesado'
                       : 'Marcar como procesado';
                 const canReservePalot = authRole === 'campo';
-                const palotReservationStatus = aderezoSaveStatus[palotStateKey] ?? 'idle';
-                const actionableRelations = (g.items || []).filter((rel) => !rel.pending && Number.isFinite(Number(rel?.id)));
+                const palotReservationStatus = coalesce(aderezoSaveStatus[palotStateKey], 'idle');
+                const actionableRelations = (g.items || []).filter((rel) => !rel.pending && Number.isFinite(Number(rel && rel.id)));
                 const palotReserved = actionableRelations.length > 0 && actionableRelations.every((rel) => Boolean(rel.reservado_aderezo));
                 const palotReservationDisabled = palotReservationStatus === 'saving' || !isOnline || actionableRelations.length === 0;
                 const palotReservationLabel = palotReservationStatus === 'saving'
@@ -1387,9 +1451,11 @@ function App() {
                           const relKey = getRelationKey(r);
                           const hasPct = r.parcela_porcentaje != null && Number(r.parcela_porcentaje) > 0;
                           const showKgEditor = hasPct || (r.kgs != null && r.kgs !== '');
-                          const canEditKg = !r.pending && !Number.isNaN(Number(r?.id));
-                          const draftValue = kgsDraft[relKey] ?? (r.kgs == null ? '' : String(r.kgs));
+                          const canEditKg = !r.pending && !Number.isNaN(Number(r && r.id));
+                          const draftValue = coalesce(kgsDraft[relKey], r.kgs == null ? '' : String(r.kgs));
                           const status = kgSaveStatus[relKey];
+                          const noteRaw = toStringSafe(r && r.notas);
+                          const noteDisplay = noteRaw.trim().length > 0 ? noteRaw : '';
                           return (
                             <div
                               key={r.id}
@@ -1426,6 +1492,7 @@ function App() {
                                 </div>
                               )}
                               <span className="kv-label">Parcela</span><span className="kv-value">{r.parcela_nombre || '-'}</span>
+                              <span className="kv-label">Notas</span><span className="kv-value" style={{ whiteSpace: 'pre-line' }}>{noteDisplay || '-'}</span>
                               <span className="kv-label">Creado por</span><span className="kv-value">{r.created_by_username || r.created_by || '-'}</span>
                               <span className="kv-label">Fecha</span><span className="kv-value">{r.created_at ? new Date(r.created_at).toLocaleString() : '-'}</span>
                               <button
@@ -1589,14 +1656,14 @@ function UsersView({ apiBase, authHeaders, appVersion, dbUrl }) {
         {users.map(us => (
           <div key={us.id} className="list-row" style={{ justifyContent: 'space-between' }}>
             <div className="controls">
-              <input style={{ width: 160 }} value={drafts[us.id]?.username ?? ''} onChange={e => setDrafts(d => ({ ...d, [us.id]: { ...(d[us.id]||{}), username: e.target.value } }))} />
-              <select value={drafts[us.id]?.role ?? 'campo'} onChange={e => setDrafts(d => ({ ...d, [us.id]: { ...(d[us.id]||{}), role: e.target.value } }))}>
+              <input style={{ width: 160 }} value={coalesce(drafts[us.id] && drafts[us.id].username, '')} onChange={e => setDrafts(d => ({ ...d, [us.id]: { ...(d[us.id]||{}), username: e.target.value } }))} />
+              <select value={coalesce(drafts[us.id] && drafts[us.id].role, 'campo')} onChange={e => setDrafts(d => ({ ...d, [us.id]: { ...(d[us.id]||{}), role: e.target.value } }))}>
                 <option value="campo">campo</option>
                 <option value="patio">patio</option>
                 <option value="molino">molino</option>
                 <option value="admin">admin</option>
               </select>
-              <input style={{ width: 160 }} placeholder="nueva contraseña" type="password" value={drafts[us.id]?.password ?? ''} onChange={e => setDrafts(d => ({ ...d, [us.id]: { ...(d[us.id]||{}), password: e.target.value } }))} />
+              <input style={{ width: 160 }} placeholder="nueva contraseña" type="password" value={coalesce(drafts[us.id] && drafts[us.id].password, '')} onChange={e => setDrafts(d => ({ ...d, [us.id]: { ...(d[us.id]||{}), password: e.target.value } }))} />
             </div>
             <div className="controls">
               <button className="btn" onClick={() => saveRow(us.id)}>Guardar</button>
@@ -1667,7 +1734,7 @@ function OlivosView({ apiBase, authHeaders }) {
         setMsg(`${data.error || 'Error importando olivos'}${missingMsg}${detailMsg}`);
         return;
       }
-      setMsg(`OK: ${data.inserted ?? 0} olivos`);
+      setMsg(`OK: ${coalesce(data.inserted, 0)} olivos`);
       setResult(data);
       load();
     } catch (e) {
@@ -1704,12 +1771,12 @@ function OlivosView({ apiBase, authHeaders }) {
           <button className="btn" onClick={doImport} disabled={!oCsv || busy}>Importar</button>
           {msg && <span className={`state ${msg.startsWith('OK') ? 'ok' : 'error'}`} style={{ marginLeft: '0.5rem' }}>{msg}</span>}
         </div>
-        {result?.missing?.length > 0 && (
+        {result && result.missing && result.missing.length > 0 && (
           <div className="list" style={{ marginTop: '0.5rem' }}>
             <div className="list-row">Faltan columnas: {result.missing.join(', ')}</div>
           </div>
         )}
-        {result?.errorsCount > 0 && (
+        {result && result.errorsCount > 0 && (
           <div className="list" style={{ marginTop: '0.5rem' }}>
             {(result.errors || []).map((e, i) => (
               <div key={i} className="list-row">{e}</div>
@@ -1776,7 +1843,7 @@ function ParcelasView({ apiBase, authHeaders }) {
         setMsg(`${data.error || 'Error importando parcelas'}${missingMsg}${detailMsg}`);
         return;
       }
-      setMsg(`OK: ${data.inserted ?? 0} parcelas`);
+      setMsg(`OK: ${coalesce(data.inserted, 0)} parcelas`);
       setResult(data);
       load();
     } catch (e) {
@@ -1813,12 +1880,12 @@ function ParcelasView({ apiBase, authHeaders }) {
           <button className="btn" onClick={doImport} disabled={!pCsv || busy}>Importar</button>
           {msg && <span className={`state ${msg.startsWith('OK') ? 'ok' : 'error'}`} style={{ marginLeft: '0.5rem' }}>{msg}</span>}
         </div>
-        {result?.missing?.length > 0 && (
+        {result && result.missing && result.missing.length > 0 && (
           <div className="list" style={{ marginTop: '0.5rem' }}>
             <div className="list-row">Faltan columnas: {result.missing.join(', ')}</div>
           </div>
         )}
-        {result?.errorsCount > 0 && (
+        {result && result.errorsCount > 0 && (
           <div className="list" style={{ marginTop: '0.5rem' }}>
             {(result.errors || []).map((e, i) => (
               <div key={i} className="list-row">{e}</div>
@@ -1835,7 +1902,7 @@ function ParcelasView({ apiBase, authHeaders }) {
             <div key={p.id} className="list-row" style={{ display: 'grid', gridTemplateColumns: '1fr 2fr' }}>
               <div className="name">#{p.id} · {p.nombre || '(sin nombre)'}</div>
               <div className="muted">
-                interno: {p.nombre_interno || '-'} · porcentaje: {p.porcentaje ?? '-'} · variedad: {p.variedad || '-'} ·
+                interno: {p.nombre_interno || '-'} · porcentaje: {coalesce(p.porcentaje, '-')} · variedad: {p.variedad || '-'} ·
                 SIGPAC {p.sigpac_municipio || '-'}/{p.sigpac_poligono || '-'}/{p.sigpac_parcela || '-'}/{p.sigpac_recinto || '-'}
               </div>
             </div>

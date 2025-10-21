@@ -38,6 +38,7 @@ const SCHEMA_SQL_BASE = `
     id_usuario INTEGER,
     kgs NUMERIC,
     reservado_aderezo BOOLEAN DEFAULT false,
+    notas TEXT,
     created_at TIMESTAMPTZ DEFAULT now()
   );
 
@@ -61,6 +62,7 @@ const SCHEMA_SQL_ALTER = `
   ALTER TABLE IF EXISTS parcelas DROP COLUMN IF EXISTS id_usuario;
   ALTER TABLE IF EXISTS parcelas_palots ADD COLUMN IF NOT EXISTS kgs NUMERIC;
   ALTER TABLE IF EXISTS parcelas_palots ADD COLUMN IF NOT EXISTS reservado_aderezo BOOLEAN DEFAULT false;
+  ALTER TABLE IF EXISTS parcelas_palots ADD COLUMN IF NOT EXISTS notas TEXT;
   ALTER TABLE IF EXISTS parcelas_palots ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
   ALTER TABLE IF EXISTS palots ADD COLUMN IF NOT EXISTS kgs NUMERIC;
   ALTER TABLE IF EXISTS palots ADD COLUMN IF NOT EXISTS procesado BOOLEAN DEFAULT false;

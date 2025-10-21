@@ -17,15 +17,15 @@ const toBool = (value) => {
 router.post('/parcelas/:parcelaId/palots', async (req, res) => {
   if (!req.userId) return res.status(401).json({ error: 'No autenticado' });
   const { parcelaId } = req.params;
-  const { palot_id, kgs, reservado_aderezo } = req.body;
+  const { palot_id, kgs, reservado_aderezo, notas } = req.body;
   if (!palot_id) {
     return res.status(400).json({ error: 'palot_id requerido' });
   }
   const userId = req.userId || null;
   const reservadoValue = toBool(reservado_aderezo);
   const result = await db.public.one(
-    'INSERT INTO parcelas_palots(id_parcela, id_palot, id_usuario, kgs, reservado_aderezo) VALUES($1, $2, $3, $4, $5) RETURNING *',
-    [parcelaId, palot_id, userId, kgs ?? null, reservadoValue]
+    'INSERT INTO parcelas_palots(id_parcela, id_palot, id_usuario, kgs, reservado_aderezo, notas) VALUES($1, $2, $3, $4, $5, $6) RETURNING *',
+    [parcelaId, palot_id, userId, kgs ?? null, reservadoValue, notas ?? null]
   );
   res.status(201).json(result);
 });
@@ -76,6 +76,7 @@ router.get('/parcelas-palots', async (req, res) => {
               p.procesado AS palot_procesado,
               pp.kgs   AS kgs,
               pp.reservado_aderezo AS reservado_aderezo,
+              pp.notas AS notas,
               pp.id_usuario AS created_by,
               u.username AS created_by_username,
               pp.created_at AS created_at
@@ -95,7 +96,7 @@ router.get('/parcelas-palots', async (req, res) => {
 router.patch('/parcelas-palots/:id', async (req, res) => {
   if (!req.userId) return res.status(401).json({ error: 'No autenticado' });
   const { id } = req.params;
-  const { kgs, reservado_aderezo } = req.body || {};
+  const { kgs, reservado_aderezo, notas } = req.body || {};
 
   const fields = [];
   const params = [];
@@ -117,6 +118,11 @@ router.patch('/parcelas-palots/:id', async (req, res) => {
   if (reservado_aderezo !== undefined) {
     fields.push(`reservado_aderezo = $${idx++}`);
     params.push(toBool(reservado_aderezo));
+  }
+
+  if (notas !== undefined) {
+    fields.push(`notas = $${idx++}`);
+    params.push(notas === null ? null : String(notas));
   }
 
   if (!fields.length) {

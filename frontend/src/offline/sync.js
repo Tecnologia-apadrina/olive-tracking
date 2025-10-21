@@ -70,7 +70,13 @@ export async function syncUp(apiBase, authHeaders) {
 
   for (const op of pending) {
     if (op.type === 'ensurePalot') {
-      const codigo = op.payload?.codigo;
+      const ensurePayload = op.payload || {};
+      const codigo = ensurePayload.codigo;
+      if (!codigo) {
+        await removePendingOp(op.id);
+        processed.push(op.id);
+        continue;
+      }
       await ensurePalot(codigo);
       await removePendingOp(op.id);
       processed.push(op.id);
@@ -78,17 +84,23 @@ export async function syncUp(apiBase, authHeaders) {
     }
     if (op.type === 'createRelation') {
       const payload = op.payload || {};
-      const { parcela_id, palot_codigo, kgs, reservado_aderezo } = payload;
+      const { parcela_id, palot_codigo, kgs, reservado_aderezo, notas } = payload;
       if (!parcela_id || !palot_codigo) {
         await removePendingOp(op.id);
         processed.push(op.id);
         continue;
       }
       const palot = await ensurePalot(palot_codigo);
+      const normalizedNotes = typeof notas === 'string' && notas.trim().length === 0 ? null : notas;
       await fetchJson(`${apiBase}/parcelas/${parcela_id}/palots`, {
         method: 'POST',
         headers: buildHeaders(authHeaders, { 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ palot_id: palot.id, kgs: kgs ?? null, reservado_aderezo: reservado_aderezo ?? false }),
+        body: JSON.stringify({
+          palot_id: palot.id,
+          kgs: kgs != null ? kgs : null,
+          reservado_aderezo: reservado_aderezo != null ? reservado_aderezo : false,
+          notas: normalizedNotes,
+        }),
       });
       await replaceRelationPlaceholder(parcela_id, palot_codigo, null);
       await removePendingOp(op.id);

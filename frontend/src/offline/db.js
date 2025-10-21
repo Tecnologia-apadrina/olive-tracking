@@ -106,49 +106,56 @@ function normalizeBool(value) {
 }
 
 function makePalotRecord(palot) {
+  const hasServerId = palot.id != null;
+  const fallbackLocalId = palot.localId ? `local-${palot.localId}` : `local-${randomId()}`;
+  const recordId = hasServerId ? palot.id : (palot.localId ? `local-${palot.localId}` : null);
   return {
-    key: palot.key || (palot.id != null ? `srv-${palot.id}` : palot.localId ? `local-${palot.localId}` : `local-${randomId()}`),
-    id: palot.id ?? (palot.localId ? `local-${palot.localId}` : null),
+    key: palot.key || (hasServerId ? `srv-${palot.id}` : fallbackLocalId),
+    id: recordId,
     codigo: palot.codigo,
-    kgs: palot.kgs ?? null,
+    kgs: palot.kgs != null ? palot.kgs : null,
     procesado: Boolean(palot.procesado),
     pending: Boolean(palot.pending),
-    source: palot.source || (palot.id != null ? 'server' : 'local'),
+    source: palot.source || (hasServerId ? 'server' : 'local'),
     created_at: palot.created_at || null,
   };
 }
 
 function makeRelationRecord(rel) {
-  const key = rel.key || (rel.id != null ? `srv-${rel.id}` : rel.localId ? `local-${rel.localId}` : `local-${randomId()}`);
+  const hasServerId = rel.id != null;
+  const fallbackLocalId = rel.localId ? `local-${rel.localId}` : `local-${randomId()}`;
+  const key = rel.key || (hasServerId ? `srv-${rel.id}` : fallbackLocalId);
+  const relationId = rel.id != null ? rel.id : null;
   return {
     key,
-    id: rel.id ?? null,
-    localId: rel.localId || (rel.id == null ? key : null),
+    id: relationId,
+    localId: rel.localId || (relationId == null ? key : null),
     parcela_id: normalizeNumber(rel.parcela_id),
-    parcela_nombre: rel.parcela_nombre ?? '',
-    sigpac_municipio: rel.sigpac_municipio ?? '',
-    sigpac_poligono: rel.sigpac_poligono ?? '',
-    sigpac_parcela: rel.sigpac_parcela ?? '',
-    sigpac_recinto: rel.sigpac_recinto ?? '',
-    parcela_variedad: rel.parcela_variedad ?? '',
-    parcela_porcentaje: rel.parcela_porcentaje ?? null,
-    parcela_nombre_interno: rel.parcela_nombre_interno ?? '',
-    palot_id: rel.palot_id ?? null,
-    palot_codigo: rel.palot_codigo ?? '',
+    parcela_nombre: rel.parcela_nombre != null ? rel.parcela_nombre : '',
+    sigpac_municipio: rel.sigpac_municipio != null ? rel.sigpac_municipio : '',
+    sigpac_poligono: rel.sigpac_poligono != null ? rel.sigpac_poligono : '',
+    sigpac_parcela: rel.sigpac_parcela != null ? rel.sigpac_parcela : '',
+    sigpac_recinto: rel.sigpac_recinto != null ? rel.sigpac_recinto : '',
+    parcela_variedad: rel.parcela_variedad != null ? rel.parcela_variedad : '',
+    parcela_porcentaje: rel.parcela_porcentaje != null ? rel.parcela_porcentaje : null,
+    parcela_nombre_interno: rel.parcela_nombre_interno != null ? rel.parcela_nombre_interno : '',
+    palot_id: rel.palot_id != null ? rel.palot_id : null,
+    palot_codigo: rel.palot_codigo != null ? rel.palot_codigo : '',
     palot_procesado: rel.palot_procesado == null ? null : Boolean(rel.palot_procesado),
-    kgs: rel.kgs ?? null,
+    kgs: rel.kgs != null ? rel.kgs : null,
     reservado_aderezo: normalizeBool(rel.reservado_aderezo),
-    created_by: rel.created_by ?? null,
-    created_by_username: rel.created_by_username ?? '',
+    notas: rel.notas == null ? '' : String(rel.notas),
+    created_by: rel.created_by != null ? rel.created_by : null,
+    created_by_username: rel.created_by_username != null ? rel.created_by_username : '',
     created_at: rel.created_at || new Date().toISOString(),
     pending: Boolean(rel.pending),
-    source: rel.source || (rel.id != null ? 'server' : 'local'),
+    source: rel.source || (hasServerId ? 'server' : 'local'),
   };
 }
 
 function toUiPalot(record) {
   return {
-    id: record.id ?? record.key,
+    id: record.id != null ? record.id : record.key,
     codigo: record.codigo,
     kgs: record.kgs,
     procesado: Boolean(record.procesado),
@@ -161,7 +168,7 @@ function toUiPalot(record) {
 
 function toUiRelation(record) {
   return {
-    id: record.id ?? record.key,
+    id: record.id != null ? record.id : record.key,
     parcela_id: record.parcela_id,
     parcela_nombre: record.parcela_nombre,
     sigpac_municipio: record.sigpac_municipio,
@@ -171,11 +178,12 @@ function toUiRelation(record) {
     parcela_variedad: record.parcela_variedad,
     parcela_porcentaje: record.parcela_porcentaje,
     parcela_nombre_interno: record.parcela_nombre_interno,
-    palot_id: record.palot_id ?? record.key,
+    palot_id: record.palot_id != null ? record.palot_id : record.key,
     palot_codigo: record.palot_codigo,
     palot_procesado: record.palot_procesado == null ? null : Boolean(record.palot_procesado),
     kgs: record.kgs,
     reservado_aderezo: normalizeBool(record.reservado_aderezo),
+    notas: record.notas == null ? '' : String(record.notas),
     created_by: record.created_by,
     created_by_username: record.created_by_username,
     created_at: record.created_at,
@@ -219,7 +227,8 @@ async function applyPendingOp(op, stores) {
   if (!op || !op.type) return;
   const { palotsStore, relationsStore } = stores;
   if (op.type === 'ensurePalot') {
-    const codigo = op.payload?.codigo;
+    const payload = op.payload || {};
+    const codigo = payload.codigo;
     if (!codigo) return;
     const existing = await palotsStore.index('byCodigo').get(codigo);
     if (existing) return;
@@ -244,12 +253,13 @@ async function applyPendingOp(op, stores) {
       sigpac_parcela: payload.sigpac_parcela,
       sigpac_recinto: payload.sigpac_recinto,
       palot_codigo: payload.palot_codigo,
-      palot_id: payload.palot_id ?? null,
+      palot_id: payload.palot_id != null ? payload.palot_id : null,
       palot_procesado: false,
-      kgs: payload.kgs ?? null,
+      kgs: payload.kgs != null ? payload.kgs : null,
       reservado_aderezo: normalizeBool(payload.reservado_aderezo),
-      created_by: payload.created_by ?? null,
-      created_by_username: payload.created_by_username ?? '',
+      notas: payload.notas == null ? '' : payload.notas,
+      created_by: payload.created_by != null ? payload.created_by : null,
+      created_by_username: payload.created_by_username != null ? payload.created_by_username : '',
       created_at: payload.created_at || new Date().toISOString(),
       pending: true,
       source: 'local',
@@ -355,7 +365,8 @@ export async function removePendingOp(id) {
     const relationsStore = tx.objectStore('relations');
     // Remove placeholders so that snapshot refresh repopulates fresh data
     if (op.type === 'ensurePalot') {
-      const codigo = op.payload?.codigo;
+      const ensurePayload = op.payload || {};
+      const codigo = ensurePayload.codigo;
       if (codigo) {
         const record = await palotsStore.index('byCodigo').get(codigo);
         if (record && record.source === 'local') {
