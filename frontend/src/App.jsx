@@ -55,6 +55,8 @@ function App() {
   const [relStatus, setRelStatus] = useState('idle'); // idle | loading | ready | error
   const [kgsDraft, setKgsDraft] = useState({}); // { [relationKey]: string }
   const [kgSaveStatus, setKgSaveStatus] = useState({}); // { [relationKey]: 'idle'|'saving'|'ok'|'error' }
+  const [notesDraft, setNotesDraft] = useState({}); // { [relationKey]: string }
+  const [noteSaveStatus, setNoteSaveStatus] = useState({}); // { [relationKey]: 'idle'|'saving'|'ok'|'error' }
   const [aderezoSaveStatus, setAderezoSaveStatus] = useState({}); // { [palotKey]: 'idle'|'saving'|'ok'|'error' }
   const [collapsedPalots, setCollapsedPalots] = useState({}); // { [palotId]: boolean }
   const [palotProcessing, setPalotProcessing] = useState({}); // { [palotKey]: 'saving'|'error' }
@@ -245,6 +247,8 @@ function App() {
     setPalotKgs('');
     setKgsDraft({});
     setKgSaveStatus({});
+    setNotesDraft({});
+    setNoteSaveStatus({});
     try {
       localStorage.removeItem('authToken');
       localStorage.removeItem('authUser');
@@ -358,14 +362,18 @@ function App() {
       ]);
       const rows = Array.isArray(relations) ? relations : [];
       setAllRels(rows);
-      const map = new Map();
+      const kgMap = new Map();
+      const noteMap = new Map();
       for (const r of rows) {
         const key = getRelationKey(r);
-        if (!key || map.has(key)) continue;
-        map.set(key, r.kgs == null ? '' : String(r.kgs));
+        if (!key) continue;
+        if (!kgMap.has(key)) kgMap.set(key, r.kgs == null ? '' : String(r.kgs));
+        if (!noteMap.has(key)) noteMap.set(key, r.notas == null ? '' : String(r.notas));
       }
-      setKgsDraft(Object.fromEntries(map));
+      setKgsDraft(Object.fromEntries(kgMap));
+      setNotesDraft(Object.fromEntries(noteMap));
       setKgSaveStatus({});
+      setNoteSaveStatus({});
       setAderezoSaveStatus({});
       setPendingCount(Array.isArray(pending) ? pending.length : 0);
       return rows;
@@ -1106,6 +1114,44 @@ function App() {
     }
   };
 
+  const handleNotesBlur = async (relation) => {
+    const relKey = getRelationKey(relation);
+    if (!relKey) return;
+    const baseDraft = coalesce(notesDraft[relKey], relation && relation.notas != null ? String(relation.notas) : '');
+    const draftValue = toStringSafe(baseDraft);
+    const hasContent = draftValue.trim().length > 0;
+    const nextValue = hasContent ? draftValue : null;
+    const numericId = Number(relation && relation.id);
+    if (Number.isNaN(numericId)) return;
+
+    const existingRaw = relation && relation.notas != null ? String(relation.notas) : '';
+    const existingValue = existingRaw.trim().length === 0 ? null : existingRaw;
+    const isSame = (nextValue == null && existingValue == null) || (nextValue != null && existingValue != null && draftValue === existingRaw);
+
+    if (isSame) {
+      setNotesDraft((s) => ({ ...s, [relKey]: nextValue == null ? '' : existingRaw }));
+      setNoteSaveStatus((s) => ({ ...s, [relKey]: 'idle' }));
+      return;
+    }
+
+    setNoteSaveStatus((s) => ({ ...s, [relKey]: 'saving' }));
+    try {
+      const res = await fetch(`${apiBase}/parcelas-palots/${numericId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ notas: nextValue })
+      });
+      if (!res.ok) throw new Error('No se pudo guardar');
+      setNotesDraft((s) => ({ ...s, [relKey]: nextValue == null ? '' : draftValue }));
+      setAllRels((rows) => rows.map((r) => (getRelationKey(r) === relKey ? { ...r, notas: nextValue } : r)));
+      setRelPalots((rows) => rows.map((r) => (getRelationKey(r) === relKey ? { ...r, notas: nextValue } : r)));
+      setNoteSaveStatus((s) => ({ ...s, [relKey]: 'ok' }));
+      setTimeout(() => setNoteSaveStatus((s) => ({ ...s, [relKey]: 'idle' })), 1200);
+    } catch (err) {
+      setNoteSaveStatus((s) => ({ ...s, [relKey]: 'error' }));
+    }
+  };
+
   const handleTogglePalotAderezoReservation = async ({ palotId, palotCodigo, relations }) => {
     if (authRole !== 'campo') return;
     const palotKey = palotKeyForState(palotId, palotCodigo);
@@ -1248,6 +1294,9 @@ function App() {
               const canEditKg = !r.pending && !Number.isNaN(Number(r?.id));
               const draftValue = kgsDraft[relKey] ?? (r.kgs == null ? '' : String(r.kgs));
               const status = kgSaveStatus[relKey];
+              const noteDraftValue = toStringSafe(coalesce(notesDraft[relKey], r.notas == null ? '' : String(r.notas)));
+              const noteStatus = noteSaveStatus[relKey];
+              const canEditNotes = !r.pending && !Number.isNaN(Number(r?.id));
               return (
                 <div
                   key={r.id || relKey}
@@ -1284,7 +1333,26 @@ function App() {
                     </div>
                   )}
                   <span className="kv-label">Parcela</span><span className="kv-value">{r.parcela_nombre || '-'}</span>
-                  <span className="kv-label">Notas</span><span className="kv-value" style={{ whiteSpace: 'pre-line' }}>{toStringSafe(r.notas || '').trim() || '-'}</span>
+                  <div className="notes-editor" style={{ gridColumn: '1 / -1' }}>
+                    <label className="kg-label" htmlFor={`notes-${relKey}`}>Notas</label>
+                    <textarea
+                      id={`notes-${relKey}`}
+                      value={noteDraftValue}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setNotesDraft((s) => ({ ...s, [relKey]: val }));
+                        setNoteSaveStatus((s) => ({ ...s, [relKey]: 'idle' }));
+                      }}
+                      onBlur={() => canEditNotes && handleNotesBlur(r)}
+                      placeholder="Sin notas"
+                      rows={3}
+                      disabled={!canEditNotes}
+                    />
+                    {noteStatus === 'saving' && <span className="muted">Guardando…</span>}
+                    {noteStatus === 'ok' && <span className="state ok">OK</span>}
+                    {noteStatus === 'error' && <span className="state error">Error</span>}
+                    {!canEditNotes && !r.pending && <span className="muted">Sin id de servidor</span>}
+                  </div>
                   <span className="kv-label">Creado por</span><span className="kv-value">{r.created_by_username || r.created_by || '-'}</span>
                   <span className="kv-label">Fecha</span><span className="kv-value">{r.created_at ? new Date(r.created_at).toLocaleString() : '-'}</span>
                   <button

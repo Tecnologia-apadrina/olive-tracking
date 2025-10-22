@@ -119,6 +119,8 @@ textarea:focus {
 .kgs-input-group { display: flex; align-items: center; gap: 0.5rem; }
 .kgs-input-group input { flex: 1; }
 .kgs-input-group .btn { white-space: nowrap; }
+.notes-editor { display: grid; gap: 0.35rem; }
+.notes-editor textarea { min-height: 72px; }
 .btn-link {
   margin-top: 0.25rem;
   padding: 0;
