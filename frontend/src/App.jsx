@@ -48,6 +48,7 @@ function App() {
   const [message, setMessage] = useState('');
   const [allRels, setAllRels] = useState([]);
   const [allStatus, setAllStatus] = useState('idle'); // idle | loading | ready | error
+  const [relationsRefreshing, setRelationsRefreshing] = useState(false);
   const [filterPalot, setFilterPalot] = useState('');
   const [expandedId, setExpandedId] = useState(null);
   const [relPalots, setRelPalots] = useState([]);
@@ -72,6 +73,7 @@ function App() {
   const [syncing, setSyncing] = useState(false);
   const syncingRef = useRef(false);
   const syncTimeoutRef = useRef(null);
+  const relationsRefreshCounter = useRef(0);
   useEffect(() => {
     let cancelled = false;
 
@@ -333,26 +335,43 @@ function App() {
     };
   }, [olivo, isOnline, authToken]);
 
-  
+  const beginRelationsRefresh = () => {
+    relationsRefreshCounter.current += 1;
+    if (relationsRefreshCounter.current === 1) {
+      setRelationsRefreshing(true);
+    }
+  };
+
+  const endRelationsRefresh = () => {
+    relationsRefreshCounter.current = Math.max(0, relationsRefreshCounter.current - 1);
+    if (relationsRefreshCounter.current === 0) {
+      setRelationsRefreshing(false);
+    }
+  };
 
   const refreshAllData = async () => {
-    const [relations, pending] = await Promise.all([
-      listRelations().catch(() => []),
-      getPendingOps().catch(() => []),
-    ]);
-    const rows = Array.isArray(relations) ? relations : [];
-    setAllRels(rows);
-    const map = new Map();
-    for (const r of rows) {
-      const key = getRelationKey(r);
-      if (!key || map.has(key)) continue;
-      map.set(key, r.kgs == null ? '' : String(r.kgs));
+    beginRelationsRefresh();
+    try {
+      const [relations, pending] = await Promise.all([
+        listRelations().catch(() => []),
+        getPendingOps().catch(() => []),
+      ]);
+      const rows = Array.isArray(relations) ? relations : [];
+      setAllRels(rows);
+      const map = new Map();
+      for (const r of rows) {
+        const key = getRelationKey(r);
+        if (!key || map.has(key)) continue;
+        map.set(key, r.kgs == null ? '' : String(r.kgs));
+      }
+      setKgsDraft(Object.fromEntries(map));
+      setKgSaveStatus({});
+      setAderezoSaveStatus({});
+      setPendingCount(Array.isArray(pending) ? pending.length : 0);
+      return rows;
+    } finally {
+      endRelationsRefresh();
     }
-    setKgsDraft(Object.fromEntries(map));
-    setKgSaveStatus({});
-    setAderezoSaveStatus({});
-    setPendingCount(Array.isArray(pending) ? pending.length : 0);
-    return rows;
   };
 
   const loadAllRels = async () => {
@@ -393,6 +412,7 @@ function App() {
     }
     syncingRef.current = true;
     setSyncing(true);
+    beginRelationsRefresh();
     if (syncTimeoutRef.current) {
       clearTimeout(syncTimeoutRef.current);
       syncTimeoutRef.current = null;
@@ -423,6 +443,7 @@ function App() {
     } finally {
       syncingRef.current = false;
       setSyncing(false);
+      endRelationsRefresh();
     }
   };
 
@@ -623,6 +644,7 @@ function App() {
       resetAfterSuccess();
     };
 
+    beginRelationsRefresh();
     setSaveStatus('saving');
     const processedCodes = [];
 
@@ -687,9 +709,9 @@ function App() {
 
       setSaveStatus('ok');
       setMessage(successMsg);
+      resetAfterSuccess();
       await runSync({ mode: 'pull' });
       await loadRelPalots(parcelaId);
-      resetAfterSuccess();
       return { ok: true, mode: 'online' };
     } catch (e) {
       const remainingCodes = uniqueCodes.filter((code) => !processedCodes.includes(code));
@@ -714,9 +736,10 @@ function App() {
       }
       handleRemainingCodes(remainingCodes);
       return { ok: false, error: e };
+    } finally {
+      endRelationsRefresh();
     }
   };
-
 
   const handleSave = async () => {
     setMessage('');
@@ -847,11 +870,8 @@ function App() {
         parcelaInfoOverride: parcelaInfo,
         successMessage: `Palot ${trimmed} guardado con ${DEFAULT_CEDENTE_KGS} kgs.`,
         offlineMessage: `Palot ${trimmed} guardado sin conexión (${DEFAULT_CEDENTE_KGS} kgs). Se sincronizará al recuperar la red.`,
-        resetMode: 'input',
-      }))
-      .then(() => {
-        setPalotKgs(String(DEFAULT_CEDENTE_KGS));
-      });
+        resetMode: 'full',
+      }));
   };
 
   const removePalotFromList = (index) => {
@@ -918,9 +938,18 @@ function App() {
     return `code:${toStringSafe(palotCodigo)}`;
   };
 
-  // Agrupar por palot
-  const palotGroups = React.useMemo(() => {
-    const base = relTab === 'today' ? relsByTab.today : relsByTab.prev;
+  const formatDayHeading = React.useCallback((dayKey) => {
+    if (!dayKey || dayKey === 'sin-fecha') return 'Sin fecha';
+    const parts = dayKey.split('-');
+    if (parts.length !== 3) return dayKey;
+    const [y, m, d] = parts.map(Number);
+    const dateObj = new Date(y, (m || 1) - 1, d || 1);
+    if (Number.isNaN(dateObj.getTime())) return dayKey;
+    const formatted = dateObj.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+    return formatted ? formatted.charAt(0).toUpperCase() + formatted.slice(1) : dayKey;
+  }, []);
+
+  const buildPalotGroups = React.useCallback((base) => {
     const map = new Map(); // palot_id -> { palot_id, palot_codigo, items: [], hasPct: boolean, processed: boolean }
     for (const r of base) {
       const key = r.palot_id;
@@ -932,7 +961,36 @@ function App() {
     }
     // Keep deterministic order: by palot code asc
     return Array.from(map.values()).sort((a, b) => String(a.palot_codigo).localeCompare(String(b.palot_codigo)));
-  }, [relsByTab, relTab]);
+  }, []);
+
+  const relsToday = relsByTab.today;
+  const relsPrevious = relsByTab.prev;
+
+  const palotGroupsToday = React.useMemo(
+    () => buildPalotGroups(relsToday),
+    [buildPalotGroups, relsToday],
+  );
+
+  const previousDayGroups = React.useMemo(() => {
+    const dayMap = new Map();
+    for (const rel of relsPrevious) {
+      const key = rel.created_at ? dateKeyLocal(rel.created_at) : 'sin-fecha';
+      if (!dayMap.has(key)) dayMap.set(key, []);
+      dayMap.get(key).push(rel);
+    }
+    return Array.from(dayMap.entries())
+      .sort((a, b) => {
+        if (a[0] === 'sin-fecha') return 1;
+        if (b[0] === 'sin-fecha') return -1;
+        return b[0].localeCompare(a[0]);
+      })
+      .map(([dayKey, items]) => ({
+        dateKey: dayKey,
+        displayDate: formatDayHeading(dayKey),
+        groups: buildPalotGroups(items),
+      }))
+      .filter((entry) => entry.groups.length > 0);
+  }, [buildPalotGroups, formatDayHeading, relsPrevious]);
 
   const syncStatusClass = React.useMemo(() => {
     if (!syncMessage) return 'state muted';
@@ -1091,6 +1149,171 @@ function App() {
   };
 
   const [menuOpen, setMenuOpen] = useState(false);
+  const renderPalotGroup = (g) => {
+    const groupKey = g.palot_id != null ? g.palot_id : `code:${toStringSafe(g.palot_codigo)}`;
+    const isCollapsed = collapsedPalots[g.palot_id] !== false;
+    const palotStateKey = palotKeyForState(g.palot_id, g.palot_codigo);
+    const processingState = palotProcessing[palotStateKey];
+    const isProcessing = processingState === 'saving';
+    const processingError = processingState === 'error';
+    const hasServerId = Number.isFinite(Number(g.palot_id));
+    const isProcessed = Boolean(g.processed);
+    const buttonDisabled = isProcessing || !hasServerId || !isOnline;
+    const buttonLabel = isProcessing ? 'Guardando…' : isProcessed ? 'Procesado ✓' : 'Procesado';
+    const buttonTitle = !hasServerId
+      ? 'Disponible tras sincronizar este palot'
+      : !isOnline
+        ? 'Sin conexión. Conecta para actualizar.'
+        : isProcessed
+          ? 'Marcar como no procesado'
+          : 'Marcar como procesado';
+    const canReservePalot = authRole === 'campo';
+    const palotReservationStatus = coalesce(aderezoSaveStatus[palotStateKey], 'idle');
+    const palotReserved = (g.items || []).length > 0 && (g.items || []).every((rel) => Boolean(rel.reservado_aderezo));
+    const palotReservationDisabled = palotReservationStatus === 'saving' || !isOnline || (g.items || []).length === 0;
+    const palotReservationLabel = palotReservationStatus === 'saving'
+      ? 'Guardando…'
+      : palotReserved
+        ? 'Quitar reserva'
+        : 'Reservar aderezo';
+    const showActions = canManagePalots || isProcessed || processingError || canReservePalot;
+    return (
+      <div key={groupKey} className={`cell ${isCollapsed ? 'cell-collapsed' : ''}`}>
+        <div className="cell-title">
+          <button
+            type="button"
+            className="collapse-toggle"
+            onClick={() => togglePalotCollapse(g.palot_id)}
+            aria-label={isCollapsed ? 'Expandir palot' : 'Colapsar palot'}
+          >
+            {isCollapsed ? '▶' : '▼'}
+          </button>
+          <span className="cell-title-text">
+            Palot {g.palot_codigo}
+            <span className="muted" style={{ marginLeft: '0.5rem', fontSize: '0.8rem' }}>({g.items.length})</span>
+          </span>
+          {(palotReserved || (g.items || []).some((rel) => Boolean(rel.reservado_aderezo))) && (
+            <span className="pill pill-info" style={{ marginLeft: '0.5rem' }}>
+              {authRole === 'molino' || authRole === 'patio' ? 'Guardar para aderezo' : 'Reservado para aderezo'}
+            </span>
+          )}
+          {g.hasPct && <span className="pill pill-warning">Parcela cedente</span>}
+          {showActions && (
+            <div className="cell-actions">
+              {isProcessed && <span className="pill pill-success">Procesado</span>}
+              {canManagePalots && (
+                <button
+                  type="button"
+                  className={`btn btn-sm ${isProcessed ? 'btn-success' : 'btn-outline'}`}
+                  disabled={buttonDisabled}
+                  aria-pressed={isProcessed}
+                  title={buttonTitle}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (buttonDisabled) return;
+                    handleTogglePalotProcessed({ palotId: g.palot_id, palotCodigo: g.palot_codigo, processed: isProcessed });
+                  }}
+                >
+                  {buttonLabel}
+                </button>
+              )}
+              {canReservePalot && (
+                <button
+                  type="button"
+                  className={`btn btn-sm ${palotReserved ? 'btn-success' : 'btn-outline'}`}
+                  disabled={palotReservationDisabled}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (palotReservationDisabled) return;
+                    handleTogglePalotAderezoReservation({ palotId: g.palot_id, palotCodigo: g.palot_codigo, relations: g.items });
+                  }}
+                >
+                  {palotReservationLabel}
+                </button>
+              )}
+              {canReservePalot && palotReservationStatus === 'ok' && <span className="state ok">OK</span>}
+              {canReservePalot && palotReservationStatus === 'error' && <span className="state error">Error</span>}
+              {processingError && (
+                <span className="muted" style={{ color: '#b91c1c', fontWeight: 600 }}>Error</span>
+              )}
+            </div>
+          )}
+        </div>
+        {!isCollapsed && (
+          <div className="cell-details">
+            {g.items.map((r) => {
+              const relKey = getRelationKey(r);
+              const hasPct = r.parcela_porcentaje != null && Number(r.parcela_porcentaje) > 0;
+              const showKgEditor = hasPct || (r.kgs != null && r.kgs !== '');
+              const canEditKg = !r.pending && !Number.isNaN(Number(r?.id));
+              const draftValue = kgsDraft[relKey] ?? (r.kgs == null ? '' : String(r.kgs));
+              const status = kgSaveStatus[relKey];
+              return (
+                <div
+                  key={r.id || relKey}
+                  className={`kv ${r.pending ? 'kv-pending-card' : ''} ${hasPct ? 'kv-cedente' : ''}`}
+                  onClick={() => setExpandedId(expandedId === r.id ? null : r.id)}
+                >
+                  {r.pending && (
+                    <span className="kv-pending" style={{ gridColumn: '1 / -1' }}>Pendiente de sincronización</span>
+                  )}
+                  {hasPct && (
+                    <span className="kv-warning" style={{ gridColumn: '1 / -1' }}>Parcela cedente ({String(r.parcela_porcentaje)}%)</span>
+                  )}
+                  {showKgEditor && (
+                    <div className="kg-editor" style={{ gridColumn: '1 / -1' }}>
+                      <label className="kg-label" htmlFor={`kg-${relKey}`}>Kgs</label>
+                      <input
+                        id={`kg-${relKey}`}
+                        className="kg-input"
+                        value={draftValue}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setKgsDraft((s) => ({ ...s, [relKey]: val }));
+                          setKgSaveStatus((s) => ({ ...s, [relKey]: 'idle' }));
+                        }}
+                        onBlur={() => canEditKg && handleKgsBlur(r)}
+                        placeholder="0"
+                        inputMode="decimal"
+                        disabled={!canEditKg}
+                      />
+                      {status === 'saving' && <span className="muted">Guardando…</span>}
+                      {status === 'ok' && <span className="state ok">OK</span>}
+                      {status === 'error' && <span className="state error">Error</span>}
+                      {!canEditKg && !r.pending && <span className="muted">Sin id de servidor</span>}
+                    </div>
+                  )}
+                  <span className="kv-label">Parcela</span><span className="kv-value">{r.parcela_nombre || '-'}</span>
+                  <span className="kv-label">Notas</span><span className="kv-value" style={{ whiteSpace: 'pre-line' }}>{toStringSafe(r.notas || '').trim() || '-'}</span>
+                  <span className="kv-label">Creado por</span><span className="kv-value">{r.created_by_username || r.created_by || '-'}</span>
+                  <span className="kv-label">Fecha</span><span className="kv-value">{r.created_at ? new Date(r.created_at).toLocaleString() : '-'}</span>
+                  <button
+                    className="cell-close"
+                    onClick={(event) => { event.stopPropagation(); handleDeleteRelation(r); }}
+                    disabled={!isOnline || syncing}
+                    aria-label="Eliminar relación"
+                  >
+                    ×
+                  </button>
+                  {expandedId === r.id && (
+                    <>
+                      <span className="kv-label">Municipio</span><span className="kv-value">{r.sigpac_municipio || '-'}</span>
+                      <span className="kv-label">Polígono</span><span className="kv-value">{r.sigpac_poligono || '-'}</span>
+                      <span className="kv-label">Parcela</span><span className="kv-value">{r.sigpac_parcela || '-'}</span>
+                      <span className="kv-label">Recinto</span><span className="kv-value">{r.sigpac_recinto || '-'}</span>
+                      <span className="kv-label">Variedad</span><span className="kv-value">{r.parcela_variedad || '-'}</span>
+                      <span className="kv-label">Porcentaje</span><span className="kv-value">{r.parcela_porcentaje != null ? `${String(r.parcela_porcentaje)}%` : '-'}</span>
+                      <span className="kv-label">Nombre interno</span><span className="kv-value">{r.parcela_nombre_interno || '-'}</span>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="container">
@@ -1258,6 +1481,18 @@ function App() {
           )}
         </div>
 
+        <div className="row">
+          <label htmlFor="relation-notes">Notas</label>
+          <textarea
+            id="relation-notes"
+            value={parcelaNotas}
+            onChange={(e) => setParcelaNotas(e.target.value)}
+            placeholder="Añade una nota sobre la parcela"
+            rows={2}
+            disabled={saveStatus === 'saving'}
+          />
+        </div>
+
         {parcelaHasPct && (
           <div className="row">
             <label>Introduce los kgs para esta parcela cedente</label>
@@ -1280,18 +1515,6 @@ function App() {
             <span className="muted">Se aplica porcentaje {String(parcelaPct)}%.</span>
           </div>
         )}
-
-        <div className="row">
-          <label htmlFor="relation-notes">Notas</label>
-          <textarea
-            id="relation-notes"
-            value={parcelaNotas}
-            onChange={(e) => setParcelaNotas(e.target.value)}
-            placeholder="Añade una nota sobre la parcela"
-            rows={2}
-            disabled={saveStatus === 'saving'}
-          />
-        </div>
 
         <div className="controls">
           <button className="btn" onClick={handleSave} disabled={!canSave}>
@@ -1348,181 +1571,35 @@ function App() {
         </div>
 
         <div className="row">
-          {allStatus === 'loading' && <span className="state muted">Cargando relaciones…</span>}
+          {allStatus !== 'error' && (allStatus === 'loading' || relationsRefreshing) && (
+            <span className="state muted">Cargando…</span>
+          )}
           {allStatus === 'error' && <span className="state error">No se pudo cargar el listado.</span>}
-          {allStatus !== 'loading' && allRels.length === 0 && (
+          {allStatus === 'ready' && !relationsRefreshing && allRels.length === 0 && (
             <span className="state muted">No hay relaciones aún.</span>
           )}
-          {palotGroups.length > 0 && (
+          {relTab === 'today' && palotGroupsToday.length > 0 && (
             <div className="cells">
-              {palotGroups.map((g) => {
-                const isCollapsed = collapsedPalots[g.palot_id] !== false;
-                const palotStateKey = palotKeyForState(g.palot_id, g.palot_codigo);
-                const processingState = palotProcessing[palotStateKey];
-                const isProcessing = processingState === 'saving';
-                const processingError = processingState === 'error';
-                const hasServerId = Number.isFinite(Number(g.palot_id));
-                const isProcessed = Boolean(g.processed);
-                const buttonDisabled = isProcessing || !hasServerId || !isOnline;
-                const buttonLabel = isProcessing ? 'Guardando…' : isProcessed ? 'Procesado ✓' : 'Procesado';
-                const buttonTitle = !hasServerId
-                  ? 'Disponible tras sincronizar este palot'
-                  : !isOnline
-                    ? 'Sin conexión. Conecta para actualizar.'
-                    : isProcessed
-                      ? 'Marcar como no procesado'
-                      : 'Marcar como procesado';
-                const canReservePalot = authRole === 'campo';
-                const palotReservationStatus = coalesce(aderezoSaveStatus[palotStateKey], 'idle');
-                const actionableRelations = (g.items || []).filter((rel) => !rel.pending && Number.isFinite(Number(rel && rel.id)));
-                const palotReserved = actionableRelations.length > 0 && actionableRelations.every((rel) => Boolean(rel.reservado_aderezo));
-                const palotReservationDisabled = palotReservationStatus === 'saving' || !isOnline || actionableRelations.length === 0;
-                const palotReservationLabel = palotReservationStatus === 'saving'
-                  ? 'Guardando…'
-                  : palotReserved
-                    ? 'Quitar reserva'
-                    : 'Reservar aderezo';
-                const showActions = canManagePalots || isProcessed || processingError || canReservePalot;
-                return (
-                  <div key={g.palot_id} className={`cell ${isCollapsed ? 'cell-collapsed' : ''}`}>
-                    <div className="cell-title">
-                      <button
-                        type="button"
-                        className="collapse-toggle"
-                        onClick={() => togglePalotCollapse(g.palot_id)}
-                        aria-label={isCollapsed ? 'Expandir palot' : 'Colapsar palot'}
-                      >
-                        {isCollapsed ? '▶' : '▼'}
-                      </button>
-                      <span className="cell-title-text">
-                        Palot {g.palot_codigo}
-                        <span className="muted" style={{ marginLeft: '0.5rem', fontSize: '0.8rem' }}>({g.items.length})</span>
-                      </span>
-                      {(palotReserved || (g.items || []).some((rel) => Boolean(rel.reservado_aderezo))) && (
-                        <span className="pill pill-info" style={{ marginLeft: '0.5rem' }}>
-                          {authRole === 'molino' || authRole === 'patio' ? 'Guardar para aderezo' : 'Reservado para aderezo'}
-                        </span>
-                      )}
-                      {g.hasPct && <span className="pill pill-warning">Parcela cedente</span>}
-                      {showActions && (
-                        <div className="cell-actions">
-                          {isProcessed && <span className="pill pill-success">Procesado</span>}
-                          {canManagePalots && (
-                            <button
-                              type="button"
-                              className={`btn btn-sm ${isProcessed ? 'btn-success' : 'btn-outline'}`}
-                              disabled={buttonDisabled}
-                              aria-pressed={isProcessed}
-                              title={buttonTitle}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                if (buttonDisabled) return;
-                                handleTogglePalotProcessed({ palotId: g.palot_id, palotCodigo: g.palot_codigo, processed: isProcessed });
-                              }}
-                            >
-                              {buttonLabel}
-                            </button>
-                          )}
-                          {canReservePalot && (
-                            <button
-                              type="button"
-                              className={`btn btn-sm ${palotReserved ? 'btn-success' : 'btn-outline'}`}
-                              disabled={palotReservationDisabled}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                if (palotReservationDisabled) return;
-                                handleTogglePalotAderezoReservation({ palotId: g.palot_id, palotCodigo: g.palot_codigo, relations: g.items });
-                              }}
-                            >
-                              {palotReservationLabel}
-                            </button>
-                          )}
-                          {canReservePalot && palotReservationStatus === 'ok' && <span className="state ok">OK</span>}
-                          {canReservePalot && palotReservationStatus === 'error' && <span className="state error">Error</span>}
-                          {processingError && (
-                            <span className="muted" style={{ color: '#b91c1c', fontWeight: 600 }}>Error</span>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                    {!isCollapsed && (
-                      <div className="cell-details">
-                        {g.items.map((r) => {
-                          const relKey = getRelationKey(r);
-                          const hasPct = r.parcela_porcentaje != null && Number(r.parcela_porcentaje) > 0;
-                          const showKgEditor = hasPct || (r.kgs != null && r.kgs !== '');
-                          const canEditKg = !r.pending && !Number.isNaN(Number(r && r.id));
-                          const draftValue = coalesce(kgsDraft[relKey], r.kgs == null ? '' : String(r.kgs));
-                          const status = kgSaveStatus[relKey];
-                          const noteRaw = toStringSafe(r && r.notas);
-                          const noteDisplay = noteRaw.trim().length > 0 ? noteRaw : '';
-                          return (
-                            <div
-                              key={r.id}
-                              className={`kv ${r.pending ? 'kv-pending-card' : ''} ${hasPct ? 'kv-cedente' : ''}`}
-                              onClick={() => setExpandedId(expandedId === r.id ? null : r.id)}
-                            >
-                              {r.pending && (
-                                <span className="kv-pending" style={{ gridColumn: '1 / -1' }}>Pendiente de sincronización</span>
-                              )}
-                              {hasPct && (
-                                <span className="kv-warning" style={{ gridColumn: '1 / -1' }}>Parcela cedente ({String(r.parcela_porcentaje)}%)</span>
-                              )}
-                              {showKgEditor && (
-                                <div className="cell-inline" style={{ gridColumn: '1 / -1' }}>
-                                  <label className="kg-label" htmlFor={`kg-${relKey}`}>Kgs</label>
-                                  <input
-                                    id={`kg-${relKey}`}
-                                    className="kg-input"
-                                    value={draftValue}
-                                    onChange={(e) => {
-                                      const val = e.target.value;
-                                      setKgsDraft((s) => ({ ...s, [relKey]: val }));
-                                      setKgSaveStatus((s) => ({ ...s, [relKey]: 'idle' }));
-                                    }}
-                                    onBlur={() => canEditKg && handleKgsBlur(r)}
-                                    placeholder="0"
-                                    inputMode="decimal"
-                                    disabled={!canEditKg}
-                                  />
-                                  {status === 'saving' && <span className="muted">Guardando…</span>}
-                                  {status === 'ok' && <span className="state ok">OK</span>}
-                                  {status === 'error' && <span className="state error">Error</span>}
-                                  {!canEditKg && !r.pending && <span className="muted">Sin id de servidor</span>}
-                                </div>
-                              )}
-                              <span className="kv-label">Parcela</span><span className="kv-value">{r.parcela_nombre || '-'}</span>
-                              <span className="kv-label">Notas</span><span className="kv-value" style={{ whiteSpace: 'pre-line' }}>{noteDisplay || '-'}</span>
-                              <span className="kv-label">Creado por</span><span className="kv-value">{r.created_by_username || r.created_by || '-'}</span>
-                              <span className="kv-label">Fecha</span><span className="kv-value">{r.created_at ? new Date(r.created_at).toLocaleString() : '-'}</span>
-                              <button
-                                className="cell-close"
-                                onClick={(event) => { event.stopPropagation(); handleDeleteRelation(r); }}
-                                disabled={!isOnline || syncing}
-                                aria-label="Eliminar relación"
-                              >
-                                ×
-                              </button>
-                              {expandedId === r.id && (
-                                <>
-                                  <span className="kv-label">Municipio</span><span className="kv-value">{r.sigpac_municipio || '-'}</span>
-                                  <span className="kv-label">Polígono</span><span className="kv-value">{r.sigpac_poligono || '-'}</span>
-                                  <span className="kv-label">Parcela</span><span className="kv-value">{r.sigpac_parcela || '-'}</span>
-                                  <span className="kv-label">Recinto</span><span className="kv-value">{r.sigpac_recinto || '-'}</span>
-                                  <span className="kv-label">Variedad</span><span className="kv-value">{r.parcela_variedad || '-'}</span>
-                                  <span className="kv-label">Porcentaje</span><span className="kv-value">{r.parcela_porcentaje != null ? String(r.parcela_porcentaje) + '%' : '-'}</span>
-                                  <span className="kv-label">Nombre interno</span><span className="kv-value">{r.parcela_nombre_interno || '-'}</span>
-                                </>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+              {palotGroupsToday.map(renderPalotGroup)}
             </div>
+          )}
+          {relTab === 'previous' && previousDayGroups.length > 0 && (
+            <div className="day-groups">
+              {previousDayGroups.map((day) => (
+                <div key={day.dateKey} className="day-group">
+                  <div className="day-heading">{day.displayDate}</div>
+                  <div className="cells">
+                    {day.groups.map(renderPalotGroup)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {relTab === 'today' && palotGroupsToday.length === 0 && allStatus === 'ready' && !relationsRefreshing && allRels.length > 0 && (
+            <span className="state muted">Sin resultados para hoy con el filtro aplicado.</span>
+          )}
+          {relTab === 'previous' && previousDayGroups.length === 0 && allStatus === 'ready' && !relationsRefreshing && allRels.length > 0 && (
+            <span className="state muted">Sin resultados anteriores para el filtro seleccionado.</span>
           )}
         </div>
       </div>
@@ -1568,6 +1645,7 @@ function UsersView({ apiBase, authHeaders, appVersion, dbUrl }) {
   const [p, setP] = React.useState('');
   const [role, setRole] = React.useState('campo');
   const [drafts, setDrafts] = React.useState({}); // {id: {username, role, password}}
+  const [rowSaveStatus, setRowSaveStatus] = React.useState({}); // {id: 'saving'}
 
   const load = async () => {
     setStatus('loading');
@@ -1608,21 +1686,33 @@ function UsersView({ apiBase, authHeaders, appVersion, dbUrl }) {
   };
 
   const saveRow = async (id) => {
+    if (rowSaveStatus[id] === 'saving') return;
+    setRowSaveStatus((prev) => ({ ...prev, [id]: 'saving' }));
     const d = drafts[id] || {};
     const payload = { username: d.username, role: d.role };
     if (d.password && d.password.trim() !== '') payload.password = d.password;
-    const res = await fetch(`${apiBase}/users/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', ...authHeaders },
-      body: JSON.stringify(payload)
-    });
-    if (res.ok) {
-      const updated = await res.json();
-      const normalized = { ...updated, role: normalizeRole(updated.role) };
-      setUsers(list => list.map(x => x.id === id ? normalized : x));
-      setDrafts(d0 => ({ ...d0, [id]: { username: normalized.username, role: normalized.role, password: '' } }));
-    } else {
+    try {
+      const res = await fetch(`${apiBase}/users/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify(payload)
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        const normalized = { ...updated, role: normalizeRole(updated.role) };
+        setUsers(list => list.map(x => x.id === id ? normalized : x));
+        setDrafts(d0 => ({ ...d0, [id]: { username: normalized.username, role: normalized.role, password: '' } }));
+      } else {
+        alert('No se pudo guardar cambios');
+      }
+    } catch (e) {
       alert('No se pudo guardar cambios');
+    } finally {
+      setRowSaveStatus((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
     }
   };
 
@@ -1666,7 +1756,9 @@ function UsersView({ apiBase, authHeaders, appVersion, dbUrl }) {
               <input style={{ width: 160 }} placeholder="nueva contraseña" type="password" value={coalesce(drafts[us.id] && drafts[us.id].password, '')} onChange={e => setDrafts(d => ({ ...d, [us.id]: { ...(d[us.id]||{}), password: e.target.value } }))} />
             </div>
             <div className="controls">
-              <button className="btn" onClick={() => saveRow(us.id)}>Guardar</button>
+              <button className="btn" onClick={() => saveRow(us.id)} disabled={rowSaveStatus[us.id] === 'saving'}>
+                {rowSaveStatus[us.id] === 'saving' ? 'Guardando…' : 'Guardar'}
+              </button>
               <button className="btn btn-outline" onClick={() => remove(us.id)}>Eliminar</button>
             </div>
           </div>
