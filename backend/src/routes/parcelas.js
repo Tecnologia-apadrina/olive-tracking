@@ -36,4 +36,34 @@ router.get('/parcelas', requireAuth, requireAdmin, async (_req, res) => {
   }
 });
 
+// Update parcela fields (admin only, currently porcentaje)
+router.patch('/parcelas/:id', requireAuth, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { porcentaje } = req.body || {};
+  if (porcentaje === undefined) {
+    return res.status(400).json({ error: 'porcentaje requerido' });
+  }
+  const numericId = Number(id);
+  if (!Number.isInteger(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: 'id inválido' });
+  }
+  let normalized = null;
+  if (porcentaje !== null && porcentaje !== '') {
+    const num = Number(porcentaje);
+    if (!Number.isFinite(num)) {
+      return res.status(400).json({ error: 'porcentaje inválido' });
+    }
+    normalized = num;
+  }
+  try {
+    const row = await db.public.one(
+      'UPDATE parcelas SET porcentaje = $2 WHERE id = $1 RETURNING *',
+      [numericId, normalized]
+    );
+    res.json(row);
+  } catch (e) {
+    res.status(404).json({ error: 'Parcela no encontrada' });
+  }
+});
+
 module.exports = router;

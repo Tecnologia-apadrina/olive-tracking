@@ -59,7 +59,6 @@ function App() {
   const [noteSaveStatus, setNoteSaveStatus] = useState({}); // { [relationKey]: 'idle'|'saving'|'ok'|'error' }
   const [aderezoSaveStatus, setAderezoSaveStatus] = useState({}); // { [palotKey]: 'idle'|'saving'|'ok'|'error' }
   const [collapsedPalots, setCollapsedPalots] = useState({}); // { [palotId]: boolean }
-  const [palotProcessing, setPalotProcessing] = useState({}); // { [palotKey]: 'saving'|'error' }
   const debounceRef = useRef(null);
   const [appVersion, setAppVersion] = useState('');
   const [dbUrl, setDbUrl] = useState('');
@@ -958,14 +957,13 @@ function App() {
   }, []);
 
   const buildPalotGroups = React.useCallback((base) => {
-    const map = new Map(); // palot_id -> { palot_id, palot_codigo, items: [], hasPct: boolean, processed: boolean }
+    const map = new Map(); // palot_id -> { palot_id, palot_codigo, items: [], hasPct: boolean }
     for (const r of base) {
       const key = r.palot_id;
-      if (!map.has(key)) map.set(key, { palot_id: r.palot_id, palot_codigo: r.palot_codigo, items: [], hasPct: false, processed: Boolean(r.palot_procesado) });
+      if (!map.has(key)) map.set(key, { palot_id: r.palot_id, palot_codigo: r.palot_codigo, items: [], hasPct: false });
       const g = map.get(key);
       g.items.push(r);
       if (!g.hasPct && r.parcela_porcentaje != null && Number(r.parcela_porcentaje) > 0) g.hasPct = true;
-      if (!g.processed && r.palot_procesado) g.processed = Boolean(r.palot_procesado);
     }
     // Keep deterministic order: by palot code asc
     return Array.from(map.values()).sort((a, b) => String(a.palot_codigo).localeCompare(String(b.palot_codigo)));
@@ -1011,8 +1009,8 @@ function App() {
   const canExport = canManagePalots;
 
   const exportCsv = (mode) => {
-    // Columnas: codigo_palot, id_parcela, nombre_parcela, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, parcela_variedad, parcela_porcentaje, kgs, procesado, fecha_creacion, creado_por
-    const header = ['codigo_palot', 'id_parcela', 'nombre_parcela', 'sigpac_municipio', 'sigpac_poligono', 'sigpac_parcela', 'sigpac_recinto', 'parcela_variedad', 'parcela_porcentaje', 'kgs', 'procesado', 'fecha_creacion', 'creado_por', 'notas'];
+    // Columnas: codigo_palot, id_parcela, nombre_parcela, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, parcela_variedad, parcela_porcentaje, kgs, fecha_creacion, creado_por, notas
+    const header = ['codigo_palot', 'id_parcela', 'nombre_parcela', 'sigpac_municipio', 'sigpac_poligono', 'sigpac_parcela', 'sigpac_recinto', 'parcela_variedad', 'parcela_porcentaje', 'kgs', 'fecha_creacion', 'creado_por', 'notas'];
     const escape = (v) => '"' + toStringSafe(v).replaceAll('"', '""') + '"';
     const source = mode === 'today' ? relsByTab.today : allRels;
     const rows = (source || []).map(r => [
@@ -1026,7 +1024,6 @@ function App() {
       r.parcela_variedad || '',
       r.parcela_porcentaje != null ? r.parcela_porcentaje : '',
       r.kgs != null ? r.kgs : '',
-      r.palot_procesado ? '1' : '0',
       r.created_at ? new Date(r.created_at).toISOString() : '',
       r.created_by_username || r.created_by || '',
       toStringSafe(r.notas).replace(/\r?\n/g, ' ').trim()
@@ -1041,37 +1038,6 @@ function App() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-  };
-
-  const handleTogglePalotProcessed = async ({ palotId, palotCodigo, processed }) => {
-    if (!canManagePalots || !authToken) return;
-    const numericId = Number(palotId);
-    if (!Number.isFinite(numericId)) return;
-    if (!isOnline) return;
-    const palotKey = palotKeyForState(palotId, palotCodigo);
-    setPalotProcessing((prev) => ({ ...prev, [palotKey]: 'saving' }));
-    try {
-      const res = await fetch(`${apiBase}/palots/${numericId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', ...authHeaders },
-        body: JSON.stringify({ procesado: !processed }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || 'No se pudo actualizar el estado');
-      }
-      await syncDown(apiBase, authHeaders);
-      await refreshAllData();
-      setLastSync(new Date().toISOString());
-      setPalotProcessing((prev) => {
-        const next = { ...prev };
-        delete next[palotKey];
-        return next;
-      });
-    } catch (err) {
-      console.error('Error actualizando procesado del palot', err);
-      setPalotProcessing((prev) => ({ ...prev, [palotKey]: 'error' }));
-    }
   };
 
   const handleKgsBlur = async (relation) => {
@@ -1199,20 +1165,6 @@ function App() {
     const groupKey = g.palot_id != null ? g.palot_id : `code:${toStringSafe(g.palot_codigo)}`;
     const isCollapsed = collapsedPalots[g.palot_id] !== false;
     const palotStateKey = palotKeyForState(g.palot_id, g.palot_codigo);
-    const processingState = palotProcessing[palotStateKey];
-    const isProcessing = processingState === 'saving';
-    const processingError = processingState === 'error';
-    const hasServerId = Number.isFinite(Number(g.palot_id));
-    const isProcessed = Boolean(g.processed);
-    const buttonDisabled = isProcessing || !hasServerId || !isOnline;
-    const buttonLabel = isProcessing ? 'Guardando…' : isProcessed ? 'Procesado ✓' : 'Procesado';
-    const buttonTitle = !hasServerId
-      ? 'Disponible tras sincronizar este palot'
-      : !isOnline
-        ? 'Sin conexión. Conecta para actualizar.'
-        : isProcessed
-          ? 'Marcar como no procesado'
-          : 'Marcar como procesado';
     const canReservePalot = authRole === 'campo';
     const palotReservationStatus = coalesce(aderezoSaveStatus[palotStateKey], 'idle');
     const palotReserved = (g.items || []).length > 0 && (g.items || []).every((rel) => Boolean(rel.reservado_aderezo));
@@ -1222,7 +1174,7 @@ function App() {
       : palotReserved
         ? 'Quitar reserva'
         : 'Reservar aderezo';
-    const showActions = canManagePalots || isProcessed || processingError || canReservePalot;
+    const showActions = canReservePalot;
     return (
       <div key={groupKey} className={`cell ${isCollapsed ? 'cell-collapsed' : ''}`}>
         <div className="cell-title">
@@ -1246,23 +1198,6 @@ function App() {
           {g.hasPct && <span className="pill pill-warning">Parcela cedente</span>}
           {showActions && (
             <div className="cell-actions">
-              {isProcessed && <span className="pill pill-success">Procesado</span>}
-              {canManagePalots && (
-                <button
-                  type="button"
-                  className={`btn btn-sm ${isProcessed ? 'btn-success' : 'btn-outline'}`}
-                  disabled={buttonDisabled}
-                  aria-pressed={isProcessed}
-                  title={buttonTitle}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    if (buttonDisabled) return;
-                    handleTogglePalotProcessed({ palotId: g.palot_id, palotCodigo: g.palot_codigo, processed: isProcessed });
-                  }}
-                >
-                  {buttonLabel}
-                </button>
-              )}
               {canReservePalot && (
                 <button
                   type="button"
@@ -1279,9 +1214,6 @@ function App() {
               )}
               {canReservePalot && palotReservationStatus === 'ok' && <span className="state ok">OK</span>}
               {canReservePalot && palotReservationStatus === 'error' && <span className="state error">Error</span>}
-              {processingError && (
-                <span className="muted" style={{ color: '#b91c1c', fontWeight: 600 }}>Error</span>
-              )}
             </div>
           )}
         </div>
@@ -1968,13 +1900,22 @@ function ParcelasView({ apiBase, authHeaders }) {
   const [busy, setBusy] = React.useState(false);
   const [msg, setMsg] = React.useState('');
   const [result, setResult] = React.useState(null);
+  const [pctDrafts, setPctDrafts] = React.useState({});
+  const [pctStatus, setPctStatus] = React.useState({});
+  const [pctMessage, setPctMessage] = React.useState({});
   const load = async () => {
     setStatus('loading');
     try {
       const res = await fetch(`${apiBase}/parcelas`, { headers: { ...authHeaders } });
       if (!res.ok) throw new Error('No autorizado');
       const data = await res.json();
-      setRows(Array.isArray(data) ? data : []);
+      const arr = Array.isArray(data) ? data : [];
+      setRows(arr);
+      const drafts = {};
+      for (const row of arr) drafts[row.id] = toStringSafe(row.porcentaje);
+      setPctDrafts(drafts);
+      setPctStatus({});
+      setPctMessage({});
       setStatus('ready');
     } catch (e) {
       setStatus('error');
@@ -2010,6 +1951,53 @@ function ParcelasView({ apiBase, authHeaders }) {
       setMsg(e.message || 'Error');
     } finally {
       setBusy(false);
+    }
+  };
+  const handlePctChange = (id, value) => {
+    setPctDrafts(prev => ({ ...prev, [id]: value }));
+    setPctMessage(prev => ({ ...prev, [id]: '' }));
+    setPctStatus(prev => ({ ...prev, [id]: prev[id] === 'ok' ? 'idle' : prev[id] }));
+  };
+  const hasPctChanged = (row) => {
+    const original = row && row.porcentaje !== undefined && row.porcentaje !== null ? String(row.porcentaje) : '';
+    const draft = pctDrafts[row.id] !== undefined && pctDrafts[row.id] !== null ? String(pctDrafts[row.id]) : '';
+    return draft.trim() !== original.trim();
+  };
+  const savePorcentaje = async (row) => {
+    const currentStatus = pctStatus[row.id];
+    if (currentStatus === 'saving') return;
+    const raw = pctDrafts[row.id];
+    const str = typeof raw === 'string' ? raw.trim() : toStringSafe(raw).trim();
+    let payload = null;
+    if (str.length > 0) {
+      const normalizedStr = str.replace(',', '.');
+      const parsed = Number(normalizedStr);
+      if (!Number.isFinite(parsed)) {
+        setPctStatus(prev => ({ ...prev, [row.id]: 'error' }));
+        setPctMessage(prev => ({ ...prev, [row.id]: 'Valor inválido' }));
+        return;
+      }
+      payload = parsed;
+    }
+    setPctStatus(prev => ({ ...prev, [row.id]: 'saving' }));
+    setPctMessage(prev => ({ ...prev, [row.id]: '' }));
+    try {
+      const res = await fetch(`${apiBase}/parcelas/${row.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ porcentaje: payload })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'Error guardando');
+      }
+      setRows(prev => prev.map(r => (r.id === row.id ? data : r)));
+      setPctDrafts(prev => ({ ...prev, [row.id]: toStringSafe(data.porcentaje) }));
+      setPctStatus(prev => ({ ...prev, [row.id]: 'ok' }));
+      setPctMessage(prev => ({ ...prev, [row.id]: 'Guardado' }));
+    } catch (e) {
+      setPctStatus(prev => ({ ...prev, [row.id]: 'error' }));
+      setPctMessage(prev => ({ ...prev, [row.id]: e.message || 'Error' }));
     }
   };
   return (
@@ -2061,9 +2049,30 @@ function ParcelasView({ apiBase, authHeaders }) {
           {rows.map(p => (
             <div key={p.id} className="list-row" style={{ display: 'grid', gridTemplateColumns: '1fr 2fr' }}>
               <div className="name">#{p.id} · {p.nombre || '(sin nombre)'}</div>
-              <div className="muted">
-                interno: {p.nombre_interno || '-'} · porcentaje: {coalesce(p.porcentaje, '-')} · variedad: {p.variedad || '-'} ·
-                SIGPAC {p.sigpac_municipio || '-'}/{p.sigpac_poligono || '-'}/{p.sigpac_parcela || '-'}/{p.sigpac_recinto || '-'}
+              <div>
+                <div className="muted">
+                  interno: {p.nombre_interno || '-'} · porcentaje actual: {coalesce(p.porcentaje, '-')} · variedad: {p.variedad || '-'} ·
+                  SIGPAC {p.sigpac_municipio || '-'}/{p.sigpac_poligono || '-'}/{p.sigpac_parcela || '-'}/{p.sigpac_recinto || '-'}
+                </div>
+                <div className="controls" style={{ marginTop: '0.5rem', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center' }}>
+                  <span>Nuevo porcentaje:</span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    style={{ width: '6rem' }}
+                    value={pctDrafts[p.id] ?? ''}
+                    onChange={(e) => handlePctChange(p.id, e.target.value)}
+                  />
+                  <button
+                    className="btn btn-outline"
+                    onClick={() => savePorcentaje(p)}
+                    disabled={pctStatus[p.id] === 'saving' || !hasPctChanged(p)}
+                  >
+                    {pctStatus[p.id] === 'saving' ? 'Guardando…' : 'Guardar'}
+                  </button>
+                  {pctStatus[p.id] === 'ok' && <span className="state ok">{pctMessage[p.id] || 'Guardado'}</span>}
+                  {pctStatus[p.id] === 'error' && <span className="state error">{pctMessage[p.id] || 'Error'}</span>}
+                </div>
               </div>
             </div>
           ))}
@@ -2110,24 +2119,6 @@ function PalotsView({ apiBase, authHeaders }) {
     }
   };
 
-  const toggleProcesado = async (palot) => {
-    setMsg('');
-    try {
-      const res = await fetch(`${apiBase}/palots/${palot.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', ...authHeaders },
-        body: JSON.stringify({ procesado: !palot.procesado })
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || 'Error al actualizar procesado');
-      }
-      load();
-    } catch (e) {
-      setMsg(e.message || 'Error');
-    }
-  };
-
   const remove = async (id) => {
     if (!confirm('¿Eliminar palot? (Se eliminarán sus relaciones)')) return;
     setMsg('');
@@ -2167,15 +2158,8 @@ function PalotsView({ apiBase, authHeaders }) {
             <div key={p.id} className="list-row" style={{ justifyContent: 'space-between' }}>
               <div>
                 <span className="name">#{p.id}</span> <span className="code">{p.codigo}</span>
-                {p.procesado && <span className="pill pill-success" style={{ marginLeft: '0.5rem' }}>Procesado</span>}
               </div>
               <div className="controls">
-                <button
-                  className={`btn btn-sm ${p.procesado ? 'btn-success' : 'btn-outline'}`}
-                  onClick={() => toggleProcesado(p)}
-                >
-                  {p.procesado ? 'Procesado ✓' : 'Procesado'}
-                </button>
                 <button className="btn btn-outline" onClick={() => remove(p.id)}>Eliminar</button>
               </div>
             </div>
