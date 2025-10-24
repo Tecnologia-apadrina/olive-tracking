@@ -23,7 +23,8 @@ const coalesce = (value, fallback) => (value === undefined || value === null ? f
 
 const normalizeRole = (role) => {
   if (!role) return '';
-  return role === 'user' ? 'campo' : role;
+  const mapped = role === 'user' ? 'campo' : role;
+  return mapped === 'metricas' ? 'metricas' : mapped;
 };
 
 function App() {
@@ -271,7 +272,7 @@ function App() {
       case '/palots':
         return 'palots';
       case '/metrics':
-        return authRoleRef.current === 'admin' ? 'metrics' : 'main';
+        return (authRoleRef.current === 'admin' || authRoleRef.current === 'metricas') ? 'metrics' : 'main';
       default:
         return 'main';
     }
@@ -1017,7 +1018,7 @@ function App() {
   }, [syncMessage]);
 
   const canManagePalots = authRole === 'admin' || authRole === 'molino' || authRole === 'patio';
-  const canExport = canManagePalots;
+  const canExport = authRole === 'admin' || authRole === 'molino';
 
   const exportCsv = (mode) => {
     // Columnas: codigo_palot, id_parcela, nombre_parcela, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, parcela_variedad, parcela_porcentaje, kgs, fecha_creacion, creado_por, notas
@@ -1412,7 +1413,7 @@ function App() {
               {authRole === 'admin' && (
                 <a className={`btn ${view === 'palots' ? '' : 'btn-outline'}`} href="/palots" onClick={(e) => { e.preventDefault(); navigate('/palots'); setMenuOpen(false); }}>Palots</a>
               )}
-              {authRole === 'admin' && (
+              {(authRole === 'admin' || authRole === 'metricas') && (
                 <a className={`btn ${view === 'metrics' ? '' : 'btn-outline'}`} href="/metrics" onClick={(e) => { e.preventDefault(); navigate('/metrics'); setMenuOpen(false); }}>Métricas</a>
               )}
               <button className="btn btn-outline" onClick={() => { clearToken(); setMenuOpen(false); }}>Salir</button>
@@ -1666,7 +1667,7 @@ function App() {
         <PalotsView apiBase={apiBase} authHeaders={authHeaders} />
       )}
 
-      {authToken && authRole === 'admin' && view === 'metrics' && (
+      {authToken && (authRole === 'admin' || authRole === 'metricas') && view === 'metrics' && (
         <MetricsView apiBase={apiBase} authHeaders={authHeaders} />
       )}
         </>
@@ -2016,6 +2017,7 @@ function UsersView({ apiBase, authHeaders, appVersion, dbUrl }) {
             <option value="campo">campo</option>
             <option value="patio">patio</option>
             <option value="molino">molino</option>
+            <option value="metricas">metricas</option>
             <option value="admin">admin</option>
           </select>
           <button className="btn" onClick={createUser} disabled={!u || !p}>Crear</button>
@@ -2033,6 +2035,7 @@ function UsersView({ apiBase, authHeaders, appVersion, dbUrl }) {
                 <option value="campo">campo</option>
                 <option value="patio">patio</option>
                 <option value="molino">molino</option>
+                <option value="metricas">metricas</option>
                 <option value="admin">admin</option>
               </select>
               <input style={{ width: 160 }} placeholder="nueva contraseña" type="password" value={coalesce(drafts[us.id] && drafts[us.id].password, '')} onChange={e => setDrafts(d => ({ ...d, [us.id]: { ...(d[us.id]||{}), password: e.target.value } }))} />

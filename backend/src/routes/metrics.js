@@ -7,12 +7,14 @@ const requireAuth = (req, res, next) => {
   next();
 };
 
-const requireAdmin = (req, res, next) => {
-  if (!req.userId || req.userRole !== 'admin') return res.status(403).json({ error: 'Requiere admin' });
+const requireAdminOrMetrics = (req, res, next) => {
+  if (!req.userId || (req.userRole !== 'admin' && req.userRole !== 'metricas')) {
+    return res.status(403).json({ error: 'Requiere admin o métricas' });
+  }
   next();
 };
 
-router.get('/metrics/harvest', requireAuth, requireAdmin, async (_req, res) => {
+router.get('/metrics/harvest', requireAuth, requireAdminOrMetrics, async (_req, res) => {
   try {
     const totalRow = await db.public.one('SELECT COUNT(*)::int AS total FROM parcelas');
     const totalParcelas = Number(totalRow.total) || 0;
