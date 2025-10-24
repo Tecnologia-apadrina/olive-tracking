@@ -2,6 +2,22 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 
+const parseRequiredNumber = (value, field = 'valor') => {
+  if (value === undefined || value === null) {
+    return { error: `${field} requerido` };
+  }
+  const str = typeof value === 'string' ? value.trim() : String(value);
+  if (str === '') {
+    return { error: `${field} requerido` };
+  }
+  const normalized = str.replace(/\s+/g, '').replace(',', '.');
+  const num = Number(normalized);
+  if (!Number.isFinite(num)) {
+    return { error: `${field} inválido` };
+  }
+  return { value: num };
+};
+
 const toBool = (value) => {
   if (value === true) return true;
   if (value === false) return false;
@@ -21,11 +37,15 @@ router.post('/parcelas/:parcelaId/palots', async (req, res) => {
   if (!palot_id) {
     return res.status(400).json({ error: 'palot_id requerido' });
   }
+  const parsedKgs = parseRequiredNumber(kgs, 'kgs');
+  if (parsedKgs.error) {
+    return res.status(400).json({ error: parsedKgs.error });
+  }
   const userId = req.userId || null;
   const reservadoValue = toBool(reservado_aderezo);
   const result = await db.public.one(
     'INSERT INTO parcelas_palots(id_parcela, id_palot, id_usuario, kgs, reservado_aderezo, notas) VALUES($1, $2, $3, $4, $5, $6) RETURNING *',
-    [parcelaId, palot_id, userId, kgs ?? null, reservadoValue, notas ?? null]
+    [parcelaId, palot_id, userId, parsedKgs.value, reservadoValue, notas ?? null]
   );
   res.status(201).json(result);
 });
@@ -103,16 +123,12 @@ router.patch('/parcelas-palots/:id', async (req, res) => {
   let idx = 1;
 
   if (kgs !== undefined) {
-    let value = null;
-    if (kgs !== null && String(kgs).trim() !== '') {
-      const num = Number(kgs);
-      if (Number.isNaN(num)) {
-        return res.status(400).json({ error: 'kgs debe ser numérico' });
-      }
-      value = num;
+    const parsed = parseRequiredNumber(kgs, 'kgs');
+    if (parsed.error) {
+      return res.status(400).json({ error: parsed.error });
     }
     fields.push(`kgs = $${idx++}`);
-    params.push(value);
+    params.push(parsed.value);
   }
 
   if (reservado_aderezo !== undefined) {

@@ -138,6 +138,8 @@ function makeRelationRecord(rel) {
     sigpac_recinto: rel.sigpac_recinto != null ? rel.sigpac_recinto : '',
     parcela_variedad: rel.parcela_variedad != null ? rel.parcela_variedad : '',
     parcela_porcentaje: rel.parcela_porcentaje != null ? rel.parcela_porcentaje : null,
+    parcela_num_olivos: normalizeNumber(rel.parcela_num_olivos),
+    parcela_hectareas: normalizeNumber(rel.parcela_hectareas),
     parcela_nombre_interno: rel.parcela_nombre_interno != null ? rel.parcela_nombre_interno : '',
     palot_id: rel.palot_id != null ? rel.palot_id : null,
     palot_codigo: rel.palot_codigo != null ? rel.palot_codigo : '',
@@ -177,6 +179,8 @@ function toUiRelation(record) {
     sigpac_recinto: record.sigpac_recinto,
     parcela_variedad: record.parcela_variedad,
     parcela_porcentaje: record.parcela_porcentaje,
+    parcela_num_olivos: record.parcela_num_olivos != null ? record.parcela_num_olivos : null,
+    parcela_hectareas: record.parcela_hectareas != null ? record.parcela_hectareas : null,
     parcela_nombre_interno: record.parcela_nombre_interno,
     palot_id: record.palot_id != null ? record.palot_id : record.key,
     palot_codigo: record.palot_codigo,
@@ -203,7 +207,12 @@ async function clearAndPut(store, rows, transform) {
 export async function saveServerSnapshot({ parcelas = [], olivos = [], palots = [], relations = [] }) {
   const db = await getDb();
   const tx = db.transaction(['parcelas', 'olivos', 'palots', 'relations', 'pendingOps'], 'readwrite');
-  await clearAndPut(tx.objectStore('parcelas'), parcelas, (row) => ({ ...row, id: normalizeNumber(row.id) }));
+  await clearAndPut(tx.objectStore('parcelas'), parcelas, (row) => ({
+    ...row,
+    id: normalizeNumber(row.id),
+    num_olivos: normalizeNumber(row.num_olivos),
+    hectareas: normalizeNumber(row.hectareas),
+  }));
   await clearAndPut(tx.objectStore('olivos'), olivos, (row) => ({ ...row, id: normalizeNumber(row.id), id_parcela: normalizeNumber(row.id_parcela) }));
   await clearAndPut(tx.objectStore('palots'), palots, (row) => makePalotRecord({ ...row, source: 'server', pending: false }));
   await clearAndPut(tx.objectStore('relations'), relations, (row) => makeRelationRecord({ ...row, source: 'server', pending: false }));
@@ -247,6 +256,8 @@ async function applyPendingOp(op, stores) {
       parcela_nombre: payload.parcela_nombre,
       parcela_variedad: payload.parcela_variedad,
       parcela_porcentaje: payload.parcela_porcentaje,
+      parcela_num_olivos: payload.parcela_num_olivos != null ? payload.parcela_num_olivos : null,
+      parcela_hectareas: payload.parcela_hectareas != null ? payload.parcela_hectareas : null,
       parcela_nombre_interno: payload.parcela_nombre_interno,
       sigpac_municipio: payload.sigpac_municipio,
       sigpac_poligono: payload.sigpac_poligono,

@@ -32,9 +32,10 @@ describe('Palots API', () => {
     const relRes = await request(app)
       .post(`/parcelas/${parcela.id}/palots`)
       .set('Authorization', 'Basic ' + Buffer.from('3:pwd').toString('base64'))
-      .send({ palot_id: palotId });
+      .send({ palot_id: palotId, kgs: 0 });
     expect(relRes.statusCode).toBe(201);
     expect(relRes.body).toHaveProperty('id_usuario', 3);
+    expect(relRes.body).toHaveProperty('kgs');
 
     const listRes = await request(app).get(`/parcelas/${parcela.id}/palots`);
     expect(listRes.statusCode).toBe(200);

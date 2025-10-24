@@ -14,8 +14,13 @@ const requireAdmin = (req, res, next) => {
 function normalizeKey(s) {
   return String(s || '')
     .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/º/g, 'o')
     .toLowerCase()
-    .replace(/[\s\-]+/g, '_');
+    .replace(/[^a-z0-9_]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
 }
 
 function pickCsvValue(row, names) {
@@ -145,13 +150,22 @@ router.post('/import/parcelas', requireAuth, requireAdmin, async (req, res) => {
   if (rows.length === 0) return res.status(400).json({ error: 'CSV vacío' });
 
   // Validate required columns exist in CSV header
-  const requiredCsvNames = ['id','name','common_name','variety_id','SIGPAC_Provincia','SIGPAC_Municipio','SIGPAC_Poligono','SIGPAC_Parcela','SIGPAC_Recinto','contract_percentage'];
-  const requiredNorm = requiredCsvNames.map(normalizeKey);
+  const requiredOptions = [
+    ['id', 'id_parcela'],
+    ['name', 'nombre'],
+    ['common_name', 'nombre_interno'],
+    ['variety_id', 'variedad'],
+    ['SIGPAC_Provincia', 'sigpac_provincia'],
+    ['SIGPAC_Municipio', 'sigpac_municipio'],
+    ['SIGPAC_Poligono', 'sigpac_poligono'],
+    ['SIGPAC_Parcela', 'sigpac_parcela'],
+    ['SIGPAC_Recinto', 'sigpac_recinto'],
+    ['contract_percentage', 'porcentaje'],
+  ];
   const present = new Set(header);
-  const missing = requiredNorm.filter(k => !present.has(k));
+  const missing = requiredOptions.filter((options) => !options.some((name) => present.has(normalizeKey(name))));
   if (missing.length > 0) {
-    // Report missing using original names where possible
-    const missingOriginal = requiredCsvNames.filter((n, i) => missing.includes(requiredNorm[i]));
+    const missingOriginal = missing.map((options) => options[0]);
     return res.status(400).json({ error: 'Faltan columnas en CSV', missing: missingOriginal });
   }
   let inserted = 0;
@@ -160,9 +174,10 @@ router.post('/import/parcelas', requireAuth, requireAdmin, async (req, res) => {
     if (r._partsLen !== header.length) {
       errors.push(`Línea ${r._line}: número de columnas ${r._partsLen} != ${header.length} (ajustada automáticamente)`);
     }
-    const id = r.id ? parseInt(r.id, 10) : null;
+    const idRaw = pickCsvValue(r, ['id', 'id_parcela']);
+    const id = idRaw !== '' ? parseInt(idRaw, 10) : null;
     if (!Number.isInteger(id)) {
-      errors.push(`Línea ${r._line}: id inválido "${r.id ?? ''}"`);
+      errors.push(`Línea ${r._line}: id inválido "${idRaw ?? ''}"`);
       continue;
     }
     const nombre = pickCsvValue(r, ['nombre', 'name']) || null;
@@ -173,18 +188,45 @@ router.post('/import/parcelas', requireAuth, requireAdmin, async (req, res) => {
     const variedad = pickCsvValue(r, ['variedad', 'variety_id']) || null;
     const nombre_interno = pickCsvValue(r, ['nombre_interno', 'common_name']) || null;
     const porcentajeRaw = pickCsvValue(r, ['porcentaje', 'contract_percentage']);
-    const porcentaje = porcentajeRaw !== '' ? Number(porcentajeRaw) : null;
-    if (porcentajeRaw !== '' && Number.isNaN(porcentaje)) {
-      errors.push(`Línea ${r._line}: porcentaje inválido "${porcentajeRaw}"`);
-      continue;
+    let porcentaje = null;
+    if (porcentajeRaw !== '') {
+      const normalizedPorcentaje = porcentajeRaw.replace(/\s+/g, '').replace(',', '.');
+      const parsed = Number(normalizedPorcentaje);
+      if (!Number.isFinite(parsed)) {
+        errors.push(`Línea ${r._line}: porcentaje inválido "${porcentajeRaw}"`);
+        continue;
+      }
+      porcentaje = parsed;
+    }
+    const numOlivosRaw = pickCsvValue(r, ['num_olivos', 'numero_olivos', 'n_olivos', 'numero_de_olivos', 'no_olivos', 'no_de_olivos']);
+    let num_olivos = null;
+    if (numOlivosRaw !== '') {
+      const normalizedNumOlivos = numOlivosRaw.replace(/\s+/g, '').replace(',', '.');
+      const parsed = Number(normalizedNumOlivos);
+      if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
+        errors.push(`Línea ${r._line}: num_olivos inválido "${numOlivosRaw}"`);
+        continue;
+      }
+      num_olivos = parsed;
+    }
+    const hectareasRaw = pickCsvValue(r, ['hectareas', 'hectáreas', 'hectares']);
+    let hectareas = null;
+    if (hectareasRaw !== '') {
+      const normalizedHectareas = hectareasRaw.replace(/\s+/g, '').replace(',', '.');
+      const parsed = Number(normalizedHectareas);
+      if (!Number.isFinite(parsed)) {
+        errors.push(`Línea ${r._line}: hectareas inválido "${hectareasRaw}"`);
+        continue;
+      }
+      hectareas = parsed;
     }
     if (!nombre) {
       errors.push(`Línea ${r._line}: nombre vacío`);
       continue;
     }
     await db.public.none(
-        `INSERT INTO parcelas(id, nombre, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, variedad, nombre_interno, porcentaje)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        `INSERT INTO parcelas(id, nombre, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, variedad, nombre_interno, porcentaje, num_olivos, hectareas)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
          ON CONFLICT (id) DO UPDATE SET
            nombre = COALESCE(EXCLUDED.nombre, parcelas.nombre),
            sigpac_municipio = COALESCE(EXCLUDED.sigpac_municipio, parcelas.sigpac_municipio),
@@ -193,9 +235,11 @@ router.post('/import/parcelas', requireAuth, requireAdmin, async (req, res) => {
            sigpac_recinto   = COALESCE(EXCLUDED.sigpac_recinto,   parcelas.sigpac_recinto),
            variedad         = COALESCE(EXCLUDED.variedad,         parcelas.variedad),
            nombre_interno   = COALESCE(EXCLUDED.nombre_interno,   parcelas.nombre_interno),
-           porcentaje       = COALESCE(EXCLUDED.porcentaje,       parcelas.porcentaje)
+           porcentaje       = COALESCE(EXCLUDED.porcentaje,       parcelas.porcentaje),
+           num_olivos       = COALESCE(EXCLUDED.num_olivos,       parcelas.num_olivos),
+           hectareas        = COALESCE(EXCLUDED.hectareas,        parcelas.hectareas)
         `,
-        [id, nombre, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, variedad, nombre_interno, porcentaje]
+        [id, nombre, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, variedad, nombre_interno, porcentaje, num_olivos, hectareas]
       );
       inserted++;
   }

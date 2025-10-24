@@ -75,6 +75,8 @@ function App() {
   const syncingRef = useRef(false);
   const syncTimeoutRef = useRef(null);
   const relationsRefreshCounter = useRef(0);
+  const authRoleRef = useRef('');
+  authRoleRef.current = authRole;
   useEffect(() => {
     let cancelled = false;
 
@@ -116,7 +118,7 @@ function App() {
         }
       }
       const basePath = initialPath === '/logout' ? '/' : initialPath;
-      setView(basePath === '/users' ? 'users' : (basePath === '/olivos' ? 'olivos' : (basePath === '/parcelas' ? 'parcelas' : (basePath === '/palots' ? 'palots' : 'main'))));
+      setView(resolveViewFromPath(basePath));
     };
 
     bootstrap();
@@ -131,7 +133,7 @@ function App() {
         setView('main');
         return;
       }
-      setView(p === '/users' ? 'users' : (p === '/olivos' ? 'olivos' : (p === '/parcelas' ? 'parcelas' : (p === '/palots' ? 'palots' : 'main'))));
+      setView(resolveViewFromPath(p));
     };
 
     window.addEventListener('popstate', onPop);
@@ -258,13 +260,31 @@ function App() {
 
   // No hagas returns antes de todos los hooks; la UI de login se renderiza condicionalmente más abajo
 
+  const resolveViewFromPath = (path) => {
+    switch (path) {
+      case '/users':
+        return 'users';
+      case '/olivos':
+        return 'olivos';
+      case '/parcelas':
+        return 'parcelas';
+      case '/palots':
+        return 'palots';
+      case '/metrics':
+        return authRoleRef.current === 'admin' ? 'metrics' : 'main';
+      default:
+        return 'main';
+    }
+  };
+
   const navigate = (path) => {
+    const nextView = resolveViewFromPath(path);
     if (window.history && window.location) {
       window.history.pushState({}, '', path);
-      setView(path === '/users' ? 'users' : (path === '/olivos' ? 'olivos' : (path === '/parcelas' ? 'parcelas' : (path === '/palots' ? 'palots' : 'main'))));
+      setView(nextView);
     } else {
       // Fallback: update state only
-      setView(path === '/users' ? 'users' : (path === '/olivos' ? 'olivos' : (path === '/parcelas' ? 'parcelas' : (path === '/palots' ? 'palots' : 'main'))));
+      setView(nextView);
     }
   };
 
@@ -558,6 +578,12 @@ function App() {
       return { ok: false, reason: 'no-codes' };
     }
 
+    if (normalizedKgs == null || Number.isNaN(normalizedKgs)) {
+      setSaveStatus('fail');
+      setMessage('Introduce un valor numérico en Kgs.');
+      return { ok: false, reason: 'invalid-kgs' };
+    }
+
     const rawNotes = String(parcelaNotas != null ? parcelaNotas : '');
     const hasNotes = rawNotes.trim().length > 0;
 
@@ -631,6 +657,8 @@ function App() {
           parcela_nombre: parcelaInfoSafe.nombre || parcelaNombre || '',
           parcela_variedad: parcelaInfoSafe.variedad || '',
           parcela_porcentaje: parcelaInfoSafe.porcentaje != null ? parcelaInfoSafe.porcentaje : (parcelaPct != null ? parcelaPct : null),
+          parcela_num_olivos: parcelaInfoSafe.num_olivos != null ? parcelaInfoSafe.num_olivos : null,
+          parcela_hectareas: parcelaInfoSafe.hectareas != null ? parcelaInfoSafe.hectareas : null,
           parcela_nombre_interno: parcelaInfoSafe.nombre_interno || '',
           sigpac_municipio: parcelaInfoSafe.sigpac_municipio || '',
           sigpac_poligono: parcelaInfoSafe.sigpac_poligono || '',
@@ -784,32 +812,15 @@ function App() {
     } catch (_) {
       parcelaInfo = null;
     }
-    const rawPercent = parcelaInfo && parcelaInfo.porcentaje !== undefined ? parcelaInfo.porcentaje : parcelaPct;
-    const hasPct = rawPercent != null && rawPercent !== '' && !Number.isNaN(Number(rawPercent)) && Number(rawPercent) > 0;
-    const rawKgsInput = hasPct ? palotKgs : '';
+    const rawKgsInput = palotKgs;
     const parsedKgs = parseKgsInput(rawKgsInput);
-    let normalizedKgs = null;
 
-    if (hasPct) {
-      if (!parsedKgs.hasValue) {
-        setSaveStatus('fail');
-        setMessage('Introduce un valor numérico en Kgs.');
-        return;
-      }
-      if (!parsedKgs.valid) {
-        setSaveStatus('fail');
-        setMessage('Introduce un valor numérico en Kgs.');
-        return;
-      }
-      normalizedKgs = parsedKgs.value;
-    } else if (parsedKgs.hasValue) {
-      if (!parsedKgs.valid) {
-        setSaveStatus('fail');
-        setMessage('Introduce un valor numérico en Kgs.');
-        return;
-      }
-      normalizedKgs = parsedKgs.value;
+    if (!parsedKgs.hasValue || !parsedKgs.valid) {
+      setSaveStatus('fail');
+      setMessage('Introduce un valor numérico en Kgs.');
+      return;
     }
+    const normalizedKgs = parsedKgs.value;
 
     await persistPalotCodes({
       codes: palotCodes,
@@ -830,7 +841,7 @@ function App() {
     && !!parcelaId
     && pendingPalotsCount > 0
     && saveStatus !== 'saving'
-    && (!parcelaHasPct || palotKgsTrimmed !== '');
+    && palotKgsTrimmed !== '';
 
   const addPalotToCustomList = () => {
     const trimmed = toStringSafe(palotInput).trim();
@@ -1010,7 +1021,23 @@ function App() {
 
   const exportCsv = (mode) => {
     // Columnas: codigo_palot, id_parcela, nombre_parcela, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, parcela_variedad, parcela_porcentaje, kgs, fecha_creacion, creado_por, notas
-    const header = ['codigo_palot', 'id_parcela', 'nombre_parcela', 'sigpac_municipio', 'sigpac_poligono', 'sigpac_parcela', 'sigpac_recinto', 'parcela_variedad', 'parcela_porcentaje', 'kgs', 'fecha_creacion', 'creado_por', 'notas'];
+    const header = [
+      'codigo_palot',
+      'id_parcela',
+      'nombre_parcela',
+      'sigpac_municipio',
+      'sigpac_poligono',
+      'sigpac_parcela',
+      'sigpac_recinto',
+      'parcela_variedad',
+      'parcela_porcentaje',
+      'parcela_num_olivos',
+      'parcela_hectareas',
+      'kgs',
+      'fecha_creacion',
+      'creado_por',
+      'notas'
+    ];
     const escape = (v) => '"' + toStringSafe(v).replaceAll('"', '""') + '"';
     const source = mode === 'today' ? relsByTab.today : allRels;
     const rows = (source || []).map(r => [
@@ -1023,6 +1050,8 @@ function App() {
       r.sigpac_recinto || '',
       r.parcela_variedad || '',
       r.parcela_porcentaje != null ? r.parcela_porcentaje : '',
+      r.parcela_num_olivos != null ? r.parcela_num_olivos : '',
+      r.parcela_hectareas != null ? r.parcela_hectareas : '',
       r.kgs != null ? r.kgs : '',
       r.created_at ? new Date(r.created_at).toISOString() : '',
       r.created_by_username || r.created_by || '',
@@ -1045,18 +1074,22 @@ function App() {
     if (!relKey) return;
     const draftValue = coalesce(kgsDraft[relKey], '');
     const parsed = parseKgsInput(draftValue);
-    if (parsed.hasValue && !parsed.valid) {
+    if (!parsed.hasValue) {
+      setKgSaveStatus((s) => ({ ...s, [relKey]: 'error' }));
+      return;
+    }
+    if (!parsed.valid) {
       setKgSaveStatus((s) => ({ ...s, [relKey]: 'error' }));
       return;
     }
 
-    const newVal = parsed.hasValue && parsed.valid ? parsed.value : null;
-    const nextDraftValue = parsed.hasValue && parsed.valid ? String(parsed.value) : '';
+    const newVal = parsed.value;
+    const nextDraftValue = String(parsed.value);
     const numericId = Number(relation && relation.id);
     if (Number.isNaN(numericId)) return;
 
     const existingVal = relation && relation.kgs != null ? Number(relation.kgs) : null;
-    if ((!parsed.hasValue && existingVal == null) || (parsed.hasValue && parsed.valid && existingVal === newVal)) {
+    if (existingVal !== null && existingVal === newVal) {
       setKgsDraft((s) => ({ ...s, [relKey]: nextDraftValue }));
       setKgSaveStatus((s) => ({ ...s, [relKey]: 'idle' }));
       return;
@@ -1222,7 +1255,6 @@ function App() {
             {g.items.map((r) => {
               const relKey = getRelationKey(r);
               const hasPct = r.parcela_porcentaje != null && Number(r.parcela_porcentaje) > 0;
-              const showKgEditor = hasPct || (r.kgs != null && r.kgs !== '');
               const canEditKg = !r.pending && !Number.isNaN(Number(r?.id));
               const draftValue = kgsDraft[relKey] ?? (r.kgs == null ? '' : String(r.kgs));
               const status = kgSaveStatus[relKey];
@@ -1241,30 +1273,27 @@ function App() {
                   {hasPct && (
                     <span className="kv-warning" style={{ gridColumn: '1 / -1' }}>Parcela cedente ({String(r.parcela_porcentaje)}%)</span>
                   )}
-                  {showKgEditor && (
-                    <div className="kg-editor" style={{ gridColumn: '1 / -1' }}>
-                      <label className="kg-label" htmlFor={`kg-${relKey}`}>Kgs</label>
-                      <input
-                        id={`kg-${relKey}`}
-                        className="kg-input"
-                        value={draftValue}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          setKgsDraft((s) => ({ ...s, [relKey]: val }));
-                          setKgSaveStatus((s) => ({ ...s, [relKey]: 'idle' }));
-                        }}
-                        onBlur={() => canEditKg && handleKgsBlur(r)}
-                        placeholder="0"
-                        inputMode="decimal"
-                        disabled={!canEditKg}
-                      />
-                      {status === 'saving' && <span className="muted">Guardando…</span>}
-                      {status === 'ok' && <span className="state ok">OK</span>}
-                      {status === 'error' && <span className="state error">Error</span>}
-                      {!canEditKg && !r.pending && <span className="muted">Sin id de servidor</span>}
-                    </div>
-                  )}
-                  <span className="kv-label">Parcela</span><span className="kv-value">{r.parcela_nombre || '-'}</span>
+                  <div className="kg-editor" style={{ gridColumn: '1 / -1' }}>
+                    <label className="kg-label" htmlFor={`kg-${relKey}`}>Kgs</label>
+                    <input
+                      id={`kg-${relKey}`}
+                      className="kg-input"
+                      value={draftValue}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setKgsDraft((s) => ({ ...s, [relKey]: val }));
+                        setKgSaveStatus((s) => ({ ...s, [relKey]: 'idle' }));
+                      }}
+                      onBlur={() => canEditKg && handleKgsBlur(r)}
+                      placeholder="0"
+                      inputMode="decimal"
+                      disabled={!canEditKg}
+                    />
+                    {status === 'saving' && <span className="muted">Guardando…</span>}
+                    {status === 'ok' && <span className="state ok">OK</span>}
+                    {status === 'error' && <span className="state error">Error</span>}
+                    {!canEditKg && !r.pending && <span className="muted">Sin id de servidor</span>}
+                  </div>
                   <div className="notes-editor" style={{ gridColumn: '1 / -1' }}>
                     <label className="kg-label" htmlFor={`notes-${relKey}`}>Notas</label>
                     <textarea
@@ -1285,6 +1314,7 @@ function App() {
                     {noteStatus === 'error' && <span className="state error">Error</span>}
                     {!canEditNotes && !r.pending && <span className="muted">Sin id de servidor</span>}
                   </div>
+                  <span className="kv-label">Parcela</span><span className="kv-value">{r.parcela_nombre || '-'}</span>
                   <span className="kv-label">Creado por</span><span className="kv-value">{r.created_by_username || r.created_by || '-'}</span>
                   <span className="kv-label">Fecha</span><span className="kv-value">{r.created_at ? new Date(r.created_at).toLocaleString() : '-'}</span>
                   <button
@@ -1302,6 +1332,8 @@ function App() {
                       <span className="kv-label">Parcela</span><span className="kv-value">{r.sigpac_parcela || '-'}</span>
                       <span className="kv-label">Recinto</span><span className="kv-value">{r.sigpac_recinto || '-'}</span>
                       <span className="kv-label">Variedad</span><span className="kv-value">{r.parcela_variedad || '-'}</span>
+                      <span className="kv-label">Nº olivos</span><span className="kv-value">{r.parcela_num_olivos != null ? r.parcela_num_olivos : '-'}</span>
+                      <span className="kv-label">Hectáreas</span><span className="kv-value">{r.parcela_hectareas != null ? r.parcela_hectareas : '-'}</span>
                       <span className="kv-label">Porcentaje</span><span className="kv-value">{r.parcela_porcentaje != null ? `${String(r.parcela_porcentaje)}%` : '-'}</span>
                       <span className="kv-label">Nombre interno</span><span className="kv-value">{r.parcela_nombre_interno || '-'}</span>
                     </>
@@ -1380,6 +1412,9 @@ function App() {
               {authRole === 'admin' && (
                 <a className={`btn ${view === 'palots' ? '' : 'btn-outline'}`} href="/palots" onClick={(e) => { e.preventDefault(); navigate('/palots'); setMenuOpen(false); }}>Palots</a>
               )}
+              {authRole === 'admin' && (
+                <a className={`btn ${view === 'metrics' ? '' : 'btn-outline'}`} href="/metrics" onClick={(e) => { e.preventDefault(); navigate('/metrics'); setMenuOpen(false); }}>Métricas</a>
+              )}
               <button className="btn btn-outline" onClick={() => { clearToken(); setMenuOpen(false); }}>Salir</button>
             </div>
           </div>
@@ -1444,27 +1479,46 @@ function App() {
         <div className="divider" />
 
         <div className="row">
-          <label>Introduce números de palot</label>
-          <div className="palot-input-group">
-            <input
-              value={palotInput}
-              onChange={(e) => {
-                setPalotInput(e.target.value);
-                if (palotAddError) setPalotAddError('');
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  if (e.shiftKey || !parcelaHasPct) {
-                    addPalotToCustomList();
-                  } else {
-                    handleQuickAdd();
+          <label>Introduce nº de palot y kgs</label>
+          <div className="palot-kgs-group">
+            <div className="palot-input-group" style={{ flex: '1 1 50%', minWidth: '200px' }}>
+              <input
+                value={palotInput}
+                onChange={(e) => {
+                  setPalotInput(e.target.value);
+                  if (palotAddError) setPalotAddError('');
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    if (e.shiftKey || !parcelaHasPct) {
+                      addPalotToCustomList();
+                    } else {
+                      handleQuickAdd();
+                    }
                   }
-                }
-              }}
-              placeholder="Ej. 42"
-              inputMode="numeric"
-            />
+                }}
+                placeholder="nº palot"
+                inputMode="numeric"
+              />
+            </div>
+            <div className="kgs-input-group" style={{ flex: '1 1 50%', minWidth: '200px', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              <input
+                value={palotKgs}
+                onChange={(e) => setPalotKgs(e.target.value)}
+                placeholder="kgs palot"
+                inputMode="decimal"
+                disabled={saveStatus === 'saving'}
+              />
+                <button
+                  type="button"
+                  className="btn btn-outline btn-sm"
+                  onClick={handleQuickAdd}
+                  disabled={!toStringSafe(palotInput).trim() || saveStatus === 'saving' || toStringSafe(palotKgs).trim() !== ''}
+                >
+                  Añadir completo
+                </button>
+            </div>
           </div>
           {palotAddError && <span className="state error" style={{ marginTop: '0.35rem' }}>{palotAddError}</span>}
           {palotList.length > 0 && (
@@ -1479,8 +1533,10 @@ function App() {
               ))}
             </div>
           )}
+          {parcelaHasPct && (
+            <span className="muted">Se aplica porcentaje {String(parcelaPct)}%.</span>
+          )}
         </div>
-
         <div className="row">
           <label htmlFor="relation-notes">Notas</label>
           <textarea
@@ -1492,29 +1548,6 @@ function App() {
             disabled={saveStatus === 'saving'}
           />
         </div>
-
-        {parcelaHasPct && (
-          <div className="row">
-            <label>Introduce los kgs para esta parcela cedente</label>
-            <div className="kgs-input-group">
-              <input
-                value={palotKgs}
-                onChange={(e) => setPalotKgs(e.target.value)}
-                placeholder="Ej. 1200"
-                inputMode="decimal"
-              />
-              <button
-                type="button"
-                className="btn btn-outline btn-sm"
-                onClick={handleQuickAdd}
-                disabled={!toStringSafe(palotInput).trim() || saveStatus === 'saving'}
-              >
-                Añadir completo
-              </button>
-            </div>
-            <span className="muted">Se aplica porcentaje {String(parcelaPct)}%.</span>
-          </div>
-        )}
 
         <div className="controls">
           <button className="btn" onClick={handleSave} disabled={!canSave}>
@@ -1632,7 +1665,256 @@ function App() {
       {authToken && view === 'palots' && (
         <PalotsView apiBase={apiBase} authHeaders={authHeaders} />
       )}
+
+      {authToken && authRole === 'admin' && view === 'metrics' && (
+        <MetricsView apiBase={apiBase} authHeaders={authHeaders} />
+      )}
         </>
+      )}
+    </div>
+  );
+}
+
+function MetricsView({ apiBase, authHeaders }) {
+  const [status, setStatus] = React.useState('idle');
+  const [rows, setRows] = React.useState([]);
+  const [perParcelaRows, setPerParcelaRows] = React.useState([]);
+  const [error, setError] = React.useState('');
+  const [totalParcelas, setTotalParcelas] = React.useState(0);
+  const [totalOlivos, setTotalOlivos] = React.useState(0);
+  const [resumenTotales, setResumenTotales] = React.useState({ parcelas: 0, olivos: 0, kgs: 0, avgOlivos: 0 });
+  const [metricsTab, setMetricsTab] = React.useState('daily'); // daily | perParcel
+
+  const load = React.useCallback(async () => {
+    setStatus('loading');
+    setError('');
+    try {
+      const res = await fetch(`${apiBase}/metrics/harvest`, { headers: { ...authHeaders } });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'No se pudieron cargar las métricas');
+      }
+      const days = Array.isArray(data.byDay) ? data.byDay : [];
+      const normalized = days.map((row) => {
+        const parcelas = Number(row.parcelas_cosechadas) || 0;
+        const olivos = Number(row.olivos_cosechados) || 0;
+        const kgs = Number(row.kgs_cosechados) || 0;
+        const avgOlivos = row.avg_olivos_por_parcela != null
+          ? Number(row.avg_olivos_por_parcela)
+          : (parcelas > 0 ? olivos / parcelas : 0);
+        return {
+          harvest_date: row.harvest_date,
+          parcelas_cosechadas: parcelas,
+          olivos_cosechados: olivos,
+          kgs_cosechados: kgs,
+          avg_olivos_por_parcela: avgOlivos,
+        };
+      });
+      setRows(normalized);
+      const totalParcelasCosechadas = normalized.reduce((sum, row) => sum + row.parcelas_cosechadas, 0);
+      const totalOlivosCosechados = normalized.reduce((sum, row) => sum + row.olivos_cosechados, 0);
+      const totalKgs = normalized.reduce((sum, row) => sum + row.kgs_cosechados, 0);
+      const avgOlivosGlobal = totalParcelasCosechadas > 0 ? totalOlivosCosechados / totalParcelasCosechadas : 0;
+      setResumenTotales({
+        parcelas: totalParcelasCosechadas,
+        olivos: totalOlivosCosechados,
+        kgs: totalKgs,
+        avgOlivos: avgOlivosGlobal,
+      });
+      const perParcelaData = Array.isArray(data.perParcela) ? data.perParcela : [];
+      const perParcelaNormalized = perParcelaData.map((row) => {
+        const numOlivos = Number(row.num_olivos) || 0;
+        const totalKgs = Number(row.total_kgs) || 0;
+        const avgKgs = row.media_kgs_por_olivo != null
+          ? Number(row.media_kgs_por_olivo)
+          : (numOlivos > 0 ? totalKgs / numOlivos : null);
+        return {
+          parcela_id: row.parcela_id != null ? row.parcela_id : (row.id != null ? row.id : null),
+          nombre: row.nombre || '',
+          num_olivos: numOlivos,
+          total_kgs: totalKgs,
+          media_kgs_por_olivo: avgKgs,
+        };
+      });
+      setPerParcelaRows(perParcelaNormalized);
+      setTotalParcelas(Number(data.totalParcelas) || 0);
+      setTotalOlivos(Number(data.totalOlivos) || 0);
+      setStatus('ready');
+    } catch (err) {
+      setError(err.message || 'No se pudieron cargar las métricas');
+      setStatus('error');
+    }
+  }, [apiBase, authHeaders]);
+
+  React.useEffect(() => {
+    load();
+  }, [load]);
+
+  const formatNumber = React.useCallback((value, maximumFractionDigits = 2) => {
+    if (value == null || Number.isNaN(value)) return '-';
+    return Number(value).toLocaleString('es-ES', { maximumFractionDigits });
+  }, []);
+
+  const formatDay = React.useCallback((day) => {
+    if (!day) return '-';
+    let parsed = new Date(day);
+    if (Number.isNaN(parsed.getTime())) {
+      parsed = new Date(`${day}T00:00:00`);
+    }
+    if (Number.isNaN(parsed.getTime())) return day;
+    return parsed.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  }, []);
+
+  const chartData = React.useMemo(() => {
+    if (!rows.length) return [];
+    const max = Math.max(...rows.map((row) => Number(row.kgs_cosechados) || 0), 0);
+    if (max <= 0) return [];
+    return rows.map((row) => {
+      const value = Number(row.kgs_cosechados) || 0;
+      return {
+        label: formatDay(row.harvest_date),
+        value,
+        height: max > 0 ? Math.max((value / max) * 100, 4) : 0, // ensure visible
+      };
+    });
+  }, [rows, formatDay]);
+
+  return (
+    <div className="card grid">
+      <div className="controls" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center' }}>
+        <div>
+          <h1>Dashboard de métricas</h1>
+          <span className="muted">Parcelas cosechadas y olivos por día</span>
+        </div>
+        <div className="controls" style={{ flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center' }}>
+          <span className="pill">Parcelas totales: {totalParcelas}</span>
+          <span className="pill">Olivos totales: {formatNumber(totalOlivos, 0)}</span>
+          <button className="btn btn-outline" onClick={load} disabled={status === 'loading'}>
+            {status === 'loading' ? 'Actualizando…' : 'Actualizar'}
+          </button>
+        </div>
+      </div>
+      {error && (
+        <div className="row">
+          <span className="state error">{error}</span>
+        </div>
+      )}
+      {status === 'loading' && !error && (
+        <div className="row">
+          <span className="state muted">Cargando métricas…</span>
+        </div>
+      )}
+      {status === 'ready' && rows.length === 0 && perParcelaRows.length === 0 && (
+        <div className="row">
+          <span className="muted">Aún no hay datos de cosecha.</span>
+        </div>
+      )}
+      {status === 'ready' && (rows.length > 0 || perParcelaRows.length > 0) && (
+        <>
+          <div className="metrics-tabs" role="tablist" aria-label="Métricas">
+            <button
+              type="button"
+              className={`btn ${metricsTab === 'daily' ? '' : 'btn-outline'}`}
+              onClick={() => setMetricsTab('daily')}
+              role="tab"
+              aria-selected={metricsTab === 'daily'}
+            >
+              Resumen diario
+            </button>
+            <button
+              type="button"
+              className={`btn ${metricsTab === 'perParcel' ? '' : 'btn-outline'}`}
+              onClick={() => setMetricsTab('perParcel')}
+              role="tab"
+              aria-selected={metricsTab === 'perParcel'}
+            >
+              Media kgs/olivo
+            </button>
+          </div>
+        </>
+      )}
+      {status === 'ready' && metricsTab === 'daily' && rows.length > 0 && (
+        <>
+          <div className="row">
+            <h2 style={{ margin: '0 0 0.5rem' }}>Resumen diario</h2>
+            <div className="table-responsive">
+              <table className="metrics-table">
+                <thead>
+                  <tr>
+                    <th>Fecha</th>
+                    <th>Parcelas cosechadas</th>
+                    <th>Olivos cosechados</th>
+                    <th>Media olivos/parcela</th>
+                    <th>Kgs cosechados</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row, idx) => (
+                    <tr key={row.harvest_date ? `${row.harvest_date}-${idx}` : `row-${idx}`}>
+                      <td>{formatDay(row.harvest_date)}</td>
+                      <td>{formatNumber(row.parcelas_cosechadas, 0)}</td>
+                      <td>{formatNumber(row.olivos_cosechados, 0)}</td>
+                      <td>{formatNumber(row.avg_olivos_por_parcela)}</td>
+                      <td>{formatNumber(row.kgs_cosechados)}</td>
+                    </tr>
+                  ))}
+                  <tr>
+                    <td style={{ fontWeight: 600 }}>Totales</td>
+                    <td style={{ fontWeight: 600 }}>{formatNumber(resumenTotales.parcelas, 0)}</td>
+                    <td style={{ fontWeight: 600 }}>{formatNumber(resumenTotales.olivos, 0)}</td>
+                    <td style={{ fontWeight: 600 }}>{formatNumber(resumenTotales.avgOlivos)}</td>
+                    <td style={{ fontWeight: 600 }}>{formatNumber(resumenTotales.kgs)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          {chartData.length > 0 && (
+            <div className="row">
+              <h3 style={{ margin: '0 0 0.5rem' }}>Kgs cosechados por día</h3>
+              <div className="metrics-chart" role="img" aria-label="Gráfico de barras de kilos cosechados por día">
+                {chartData.map((entry) => (
+                  <div key={entry.label} className="metrics-chart-bar" style={{ height: `${entry.height}%` }}>
+                    <span className="metrics-chart-value">{formatNumber(entry.value)}</span>
+                    <span className="metrics-chart-label">{entry.label}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+      {status === 'ready' && metricsTab === 'perParcel' && perParcelaRows.length === 0 && (
+        <div className="row">
+          <span className="muted">Sin datos de kgs por parcela aún.</span>
+        </div>
+      )}
+      {status === 'ready' && metricsTab === 'perParcel' && perParcelaRows.length > 0 && (
+        <div className="row">
+          <h2 style={{ margin: '0 0 0.5rem' }}>Media de kgs por olivo (por parcela)</h2>
+          <div className="table-responsive">
+            <table className="metrics-table">
+              <thead>
+                <tr>
+                  <th>Parcela</th>
+                  <th>Olivos totales</th>
+                  <th>Kgs cosechados</th>
+                  <th>Media kgs/olivo</th>
+                </tr>
+              </thead>
+              <tbody>
+                {perParcelaRows.map((row) => (
+                  <tr key={row.parcela_id ?? row.nombre}>
+                    <td>{row.nombre || `Parcela #${row.parcela_id || '-'}`}</td>
+                    <td>{formatNumber(row.num_olivos, 0)}</td>
+                    <td>{formatNumber(row.total_kgs)}</td>
+                    <td>{row.media_kgs_por_olivo != null ? formatNumber(row.media_kgs_por_olivo) : '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -2051,7 +2333,7 @@ function ParcelasView({ apiBase, authHeaders }) {
               <div className="name">#{p.id} · {p.nombre || '(sin nombre)'}</div>
               <div>
                 <div className="muted">
-                  interno: {p.nombre_interno || '-'} · porcentaje actual: {coalesce(p.porcentaje, '-')} · variedad: {p.variedad || '-'} ·
+                  interno: {p.nombre_interno || '-'} · olivos: {coalesce(p.num_olivos, '-')} · hectáreas: {coalesce(p.hectareas, '-')} · porcentaje actual: {coalesce(p.porcentaje, '-')} · variedad: {p.variedad || '-'} ·
                   SIGPAC {p.sigpac_municipio || '-'}/{p.sigpac_poligono || '-'}/{p.sigpac_parcela || '-'}/{p.sigpac_recinto || '-'}
                 </div>
                 <div className="controls" style={{ marginTop: '0.5rem', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center' }}>

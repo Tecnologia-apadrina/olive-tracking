@@ -11,7 +11,9 @@ create table if not exists s_parcelas(
   sigpac_poligono text,
   sigpac_parcela text,
   sigpac_recinto text,
-  variedad text
+  variedad text,
+  num_olivos text,
+  hectareas text
 );
 create table if not exists s_palots(id int, codigo text);
 create table if not exists s_olivos(id int, id_parcela int);
@@ -23,7 +25,7 @@ truncate s_olivos;
 \echo Importando parcelas (staging) desde :'PARCELAS'
 -- Intento 1: CSV extendido -> id,nombre,sigpac_municipio,sigpac_poligono,sigpac_parcela,sigpac_recinto,variedad
 \set ON_ERROR_STOP off
-\copy s_parcelas(id, nombre, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, variedad) from :'PARCELAS' with (format csv, header true)
+\copy s_parcelas(id, nombre, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, variedad, num_olivos, hectareas) from :'PARCELAS' with (format csv, header true)
 \set ON_ERROR_STOP on
 -- Si no cargó filas (formato antiguo), probar con id,nombre,variedad
 -- Creamos un booleano compatible con \if (on/off)
@@ -58,7 +60,9 @@ create table if not exists parcelas(
   sigpac_poligono text,
   sigpac_parcela text,
   sigpac_recinto text,
-  variedad text
+  variedad text,
+  num_olivos int,
+  hectareas numeric
 );
 -- Si ya existía, garantizamos que están las columnas nuevas
 alter table if exists parcelas add column if not exists sigpac_municipio text;
@@ -68,18 +72,32 @@ alter table if exists parcelas add column if not exists sigpac_recinto   text;
 alter table if exists parcelas add column if not exists variedad         text;
 alter table if exists parcelas add column if not exists nombre_interno   text;
 alter table if exists parcelas add column if not exists porcentaje       numeric;
+alter table if exists parcelas add column if not exists num_olivos       int;
+alter table if exists parcelas add column if not exists hectareas        numeric;
 alter table if exists parcelas drop column if exists id_usuario;
 
 \echo Volcando staging a tablas definitivas
-insert into parcelas(id, nombre, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, variedad)
-select id, nombre, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, variedad from s_parcelas
+insert into parcelas(id, nombre, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, variedad, num_olivos, hectareas)
+select
+  id,
+  nombre,
+  sigpac_municipio,
+  sigpac_poligono,
+  sigpac_parcela,
+  sigpac_recinto,
+  variedad,
+  nullif(trim(num_olivos), '')::int,
+  nullif(replace(trim(hectareas), ',', '.'), '')::numeric
+from s_parcelas
 on conflict (id) do update set
   nombre = coalesce(nullif(excluded.nombre, ''), parcelas.nombre),
   sigpac_municipio = coalesce(nullif(excluded.sigpac_municipio, ''), parcelas.sigpac_municipio),
   sigpac_poligono  = coalesce(nullif(excluded.sigpac_poligono,  ''), parcelas.sigpac_poligono),
   sigpac_parcela   = coalesce(nullif(excluded.sigpac_parcela,   ''), parcelas.sigpac_parcela),
   sigpac_recinto   = coalesce(nullif(excluded.sigpac_recinto,   ''), parcelas.sigpac_recinto),
-  variedad         = coalesce(nullif(excluded.variedad,         ''), parcelas.variedad);
+  variedad         = coalesce(nullif(excluded.variedad,         ''), parcelas.variedad),
+  num_olivos       = coalesce(excluded.num_olivos, parcelas.num_olivos),
+  hectareas        = coalesce(excluded.hectareas, parcelas.hectareas);
 
 -- Evitar duplicados por codigo sin unique constraint: left join anti-join
 -- Inserta palots con id explícito cuando esté presente y usa upsert por id

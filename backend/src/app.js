@@ -10,6 +10,7 @@ const usersRoutes = require('./routes/users');
 const importRoutes = require('./routes/import');
 const versionRoutes = require('./routes/version');
 const syncRoutes = require('./routes/sync');
+const metricsRoutes = require('./routes/metrics');
 app.use(cors());
 // Increase payload limit to allow large CSV uploads wrapped in JSON
 app.use(express.json({ limit: '50mb' }));
@@ -25,6 +26,7 @@ app.use(usersRoutes);
 app.use(importRoutes);
 app.use(versionRoutes);
 app.use(syncRoutes);
+app.use(metricsRoutes);
 app.get('/', (req, res) => {
   res.json({message: 'API operativa'});
 });

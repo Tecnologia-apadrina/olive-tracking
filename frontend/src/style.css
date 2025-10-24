@@ -346,6 +346,93 @@ textarea:focus {
 .kv-label { color: var(--muted); font-size: 0.82rem; text-transform: none; letter-spacing: 0.1px; }
 .kv-value { color: var(--text); font-weight: 600; }
 
+.palot-kgs-group {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-end;
+  flex-wrap: nowrap;
+}
+
+@media (max-width: 600px) {
+  .palot-kgs-group {
+    flex-wrap: wrap;
+  }
+}
+
+.table-responsive {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.metrics-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 540px;
+}
+
+.metrics-table th,
+.metrics-table td {
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.metrics-table tbody tr:nth-child(even) {
+  background: #f9fafb;
+}
+
+.metrics-tabs {
+  display: inline-flex;
+  gap: 0.5rem;
+  margin: 0.5rem 0 1rem;
+}
+
+.metrics-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.75rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: linear-gradient(180deg, rgba(17, 24, 39, 0.05), rgba(17, 24, 39, 0));
+  overflow-x: auto;
+  height: 240px;
+}
+
+.metrics-chart-bar {
+  position: relative;
+  flex: 1 0 48px;
+  max-width: 120px;
+  min-height: 60px;
+  background: linear-gradient(180deg, rgba(34, 197, 94, 0.8), rgba(34, 197, 94, 0.4));
+  border-radius: 0.5rem 0.5rem 0 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  transition: transform 0.15s ease;
+}
+
+.metrics-chart-bar:hover {
+  transform: translateY(-4px);
+}
+
+.metrics-chart-value {
+  position: absolute;
+  top: -1.5rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.metrics-chart-label {
+  position: absolute;
+  bottom: -1.6rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--muted);
+  writing-mode: vertical-rl;
+}
+
 /* Responsive tweaks */
 @media (max-width: 768px) {
   body { padding: 1rem; }

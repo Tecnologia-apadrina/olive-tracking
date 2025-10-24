@@ -18,6 +18,8 @@ router.get('/sync/snapshot', async (req, res) => {
                              par.sigpac_recinto,
                              par.variedad   AS parcela_variedad,
                              par.porcentaje AS parcela_porcentaje,
+                             par.num_olivos AS parcela_num_olivos,
+                             par.hectareas  AS parcela_hectareas,
                              par.nombre_interno AS parcela_nombre_interno,
                              p.id     AS palot_id,
                              p.codigo AS palot_codigo,

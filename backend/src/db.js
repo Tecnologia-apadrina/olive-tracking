@@ -15,7 +15,9 @@ const SCHEMA_SQL_BASE = `
     sigpac_parcela TEXT,
     sigpac_recinto TEXT,
     variedad TEXT,
-    porcentaje NUMERIC
+    porcentaje NUMERIC,
+    num_olivos INTEGER,
+    hectareas NUMERIC
   );
 
   CREATE TABLE IF NOT EXISTS olivos (
@@ -59,6 +61,8 @@ const SCHEMA_SQL_ALTER = `
   ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS variedad TEXT;
   ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS nombre_interno TEXT;
   ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS porcentaje NUMERIC;
+  ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS num_olivos INTEGER;
+  ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS hectareas NUMERIC;
   ALTER TABLE IF EXISTS parcelas DROP COLUMN IF EXISTS id_usuario;
   ALTER TABLE IF EXISTS parcelas_palots ADD COLUMN IF NOT EXISTS kgs NUMERIC;
   ALTER TABLE IF EXISTS parcelas_palots ADD COLUMN IF NOT EXISTS reservado_aderezo BOOLEAN DEFAULT false;
