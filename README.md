@@ -72,6 +72,19 @@ Notas:
   docker run --rm -v olive_pgdata:/var/lib/postgresql/data -v "$PWD":/backup alpine \
     tar czf /backup/pgdata.tgz -C / var/lib/postgresql/data
   ```
+- Copia puntual vía API (requiere usuario admin):
+  ```bash
+  B64=$(printf 'admin:admin' | base64)
+  curl -X POST \
+    -H "Authorization: Basic $B64" \
+    http://localhost/api/backup/run
+  ```
+
+### Copias de seguridad automáticas
+- El backend genera una copia diaria mediante `pg_dump` a las 00:00 por defecto y la guarda en `./backups`.
+- Puedes ajustar la hora/minuto con las variables `DB_BACKUP_HOUR` (0-23) y `DB_BACKUP_MINUTE` (0-59).
+- Cambia el directorio destino usando `DB_BACKUP_DIR` (ruta absoluta o relativa al proyecto).
+- Cada copia se guarda con el formato `backup-YYYY-MM-DDTHH-mm-ss.dump` lista para restaurar con `pg_restore`.
 
 ## Endpoints y autenticación
 - La API está bajo `/api/*` vía Nginx. Ejemplo de comprobación:
