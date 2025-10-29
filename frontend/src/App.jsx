@@ -969,16 +969,37 @@ function App() {
   }, []);
 
   const buildPalotGroups = React.useCallback((base) => {
-    const map = new Map(); // palot_id -> { palot_id, palot_codigo, items: [], hasPct: boolean }
+    const map = new Map(); // palot_id -> { palot_id, palot_codigo, items: [], hasPct: boolean, latestCreatedAt: number }
     for (const r of base) {
-      const key = r.palot_id;
-      if (!map.has(key)) map.set(key, { palot_id: r.palot_id, palot_codigo: r.palot_codigo, items: [], hasPct: false });
+      const key = r.palot_id != null ? r.palot_id : `code:${toStringSafe(r.palot_codigo)}`;
+      if (!map.has(key)) {
+        map.set(key, { palot_id: r.palot_id, palot_codigo: r.palot_codigo, items: [], hasPct: false, latestCreatedAt: 0 });
+      }
       const g = map.get(key);
       g.items.push(r);
+      const createdTs = r.created_at ? new Date(r.created_at).getTime() : 0;
+      if (createdTs > (g.latestCreatedAt || 0)) g.latestCreatedAt = createdTs;
       if (!g.hasPct && r.parcela_porcentaje != null && Number(r.parcela_porcentaje) > 0) g.hasPct = true;
     }
-    // Keep deterministic order: by palot code asc
-    return Array.from(map.values()).sort((a, b) => String(a.palot_codigo).localeCompare(String(b.palot_codigo)));
+    return Array.from(map.values())
+      .map((group) => ({
+        ...group,
+        items: group.items
+          .slice()
+          .sort((a, b) => {
+            const at = a.created_at ? new Date(a.created_at).getTime() : 0;
+            const bt = b.created_at ? new Date(b.created_at).getTime() : 0;
+            if (at === bt) return Number(b.id || 0) - Number(a.id || 0);
+            return bt - at;
+          }),
+      }))
+      .sort((a, b) => {
+        const diff = (b.latestCreatedAt || 0) - (a.latestCreatedAt || 0);
+        if (diff !== 0) return diff;
+        const codeA = String(a.palot_codigo || '');
+        const codeB = String(b.palot_codigo || '');
+        return codeA.localeCompare(codeB);
+      });
   }, []);
 
   const relsToday = relsByTab.today;
@@ -1683,8 +1704,9 @@ function MetricsView({ apiBase, authHeaders }) {
   const [error, setError] = React.useState('');
   const [totalParcelas, setTotalParcelas] = React.useState(0);
   const [totalOlivos, setTotalOlivos] = React.useState(0);
-  const [resumenTotales, setResumenTotales] = React.useState({ parcelas: 0, olivos: 0, kgs: 0, avgOlivos: 0 });
-  const [metricsTab, setMetricsTab] = React.useState('daily'); // daily | perParcel
+  const [resumenTotales, setResumenTotales] = React.useState({ parcelas: 0, olivos: 0, kgs: 0, avgOlivos: 0, avgKgsPorOlivo: 0 });
+  const [metricsTab, setMetricsTab] = React.useState('daily'); // daily | perParcel | estimates
+  const [perParcelaSort, setPerParcelaSort] = React.useState({ column: 'nombre', direction: 'asc' });
 
   const load = React.useCallback(async () => {
     setStatus('loading');
@@ -1716,11 +1738,13 @@ function MetricsView({ apiBase, authHeaders }) {
       const totalOlivosCosechados = normalized.reduce((sum, row) => sum + row.olivos_cosechados, 0);
       const totalKgs = normalized.reduce((sum, row) => sum + row.kgs_cosechados, 0);
       const avgOlivosGlobal = totalParcelasCosechadas > 0 ? totalOlivosCosechados / totalParcelasCosechadas : 0;
+      const avgKgsPorOlivo = totalOlivosCosechados > 0 ? totalKgs / totalOlivosCosechados : 0;
       setResumenTotales({
         parcelas: totalParcelasCosechadas,
         olivos: totalOlivosCosechados,
         kgs: totalKgs,
         avgOlivos: avgOlivosGlobal,
+        avgKgsPorOlivo,
       });
       const perParcelaData = Array.isArray(data.perParcela) ? data.perParcela : [];
       const perParcelaNormalized = perParcelaData.map((row) => {
@@ -1780,16 +1804,79 @@ function MetricsView({ apiBase, authHeaders }) {
     });
   }, [rows, formatDay]);
 
+  const olivosRestantes = Math.max(Number(totalOlivos || 0) - Number(resumenTotales.olivos || 0), 0);
+  const hasHarvestData = resumenTotales.olivos > 0 && resumenTotales.kgs > 0;
+  const avgKgsPorOlivoGlobal = Number(resumenTotales.avgKgsPorOlivo) || 0;
+  const estimatedRemainingKgs = hasHarvestData && avgKgsPorOlivoGlobal > 0 && olivosRestantes > 0
+    ? avgKgsPorOlivoGlobal * olivosRestantes
+    : 0;
+  const estimatedTotalKgs = (Number(resumenTotales.kgs) || 0) + estimatedRemainingKgs;
+  const harvestProgressPct = totalOlivos > 0
+    ? Math.min((Number(resumenTotales.olivos || 0) / Number(totalOlivos)) * 100, 100)
+    : 0;
+  const handlePerParcelaSort = React.useCallback((column) => {
+    setPerParcelaSort((current) => {
+      if (current.column === column) {
+        return { column, direction: current.direction === 'asc' ? 'desc' : 'asc' };
+      }
+      const defaultDirection = column === 'nombre' ? 'asc' : 'desc';
+      return { column, direction: defaultDirection };
+    });
+  }, []);
+  const sortedPerParcelaRows = React.useMemo(() => {
+    const base = Array.isArray(perParcelaRows) ? [...perParcelaRows] : [];
+    const { column, direction } = perParcelaSort;
+    const multiplier = direction === 'asc' ? 1 : -1;
+    const compare = (a, b) => {
+      if (column === 'nombre') {
+        const nameA = String(a.nombre || '').toLocaleLowerCase('es-ES');
+        const nameB = String(b.nombre || '').toLocaleLowerCase('es-ES');
+        const cmp = nameA.localeCompare(nameB, 'es', { sensitivity: 'base' });
+        if (cmp !== 0) return cmp * multiplier;
+        return (Number(a.parcela_id || 0) - Number(b.parcela_id || 0)) * multiplier;
+      }
+      const toNumeric = (value) => {
+        if (value === undefined || value === null) return null;
+        const num = Number(value);
+        return Number.isFinite(num) ? num : null;
+      };
+      const valA = toNumeric(a[column]);
+      const valB = toNumeric(b[column]);
+      if (valA === null && valB === null) return 0;
+      if (valA === null) return 1;
+      if (valB === null) return -1;
+      if (valA === valB) {
+        const nameFallback = String(a.nombre || '').localeCompare(String(b.nombre || ''), 'es', { sensitivity: 'base' });
+        if (nameFallback !== 0) return nameFallback * multiplier;
+        return (Number(a.parcela_id || 0) - Number(b.parcela_id || 0)) * multiplier;
+      }
+      return (valA < valB ? -1 : 1) * multiplier;
+    };
+    return base.sort(compare);
+  }, [perParcelaRows, perParcelaSort]);
+
+  const parcelasRestantes = Math.max(Number(totalParcelas || 0) - Number(resumenTotales.parcelas || 0), 0);
+  const safeProgress = Number.isFinite(harvestProgressPct) ? Math.min(Math.max(harvestProgressPct, 0), 100) : 0;
+  const harvestProgressDisplay = totalOlivos > 0 ? formatNumber(safeProgress, 1) : '-';
+  const estimatedRemainingDisplay = hasHarvestData ? formatNumber(estimatedRemainingKgs) : '-';
+  const estimatedTotalDisplay = hasHarvestData ? formatNumber(estimatedTotalKgs) : '-';
+  const avgKgsGlobalDisplay = hasHarvestData ? formatNumber(avgKgsPorOlivoGlobal) : '-';
+  const totalOlivosDisplay = formatNumber(totalOlivos, 0);
+  const harvestedOlivosDisplay = formatNumber(resumenTotales.olivos, 0);
+  const olivosRestantesDisplay = formatNumber(olivosRestantes, 0);
+  const harvestedKgsDisplay = formatNumber(resumenTotales.kgs);
+  const parcelasTotalesDisplay = formatNumber(totalParcelas, 0);
+  const harvestedParcelasDisplay = formatNumber(resumenTotales.parcelas, 0);
+  const parcelasRestantesDisplay = formatNumber(parcelasRestantes, 0);
+
   return (
-    <div className="card grid">
-      <div className="controls" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center' }}>
-        <div>
+    <div className="card grid metrics-layout">
+      <div className="metrics-header">
+        <div className="metrics-header-text">
           <h1>Dashboard de métricas</h1>
-          <span className="muted">Parcelas cosechadas y olivos por día</span>
+          <span className="muted">Seguimiento actualizado de cosecha y rendimiento.</span>
         </div>
-        <div className="controls" style={{ flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center' }}>
-          <span className="pill">Parcelas totales: {totalParcelas}</span>
-          <span className="pill">Olivos totales: {formatNumber(totalOlivos, 0)}</span>
+        <div className="metrics-actions">
           <button className="btn btn-outline" onClick={load} disabled={status === 'loading'}>
             {status === 'loading' ? 'Actualizando…' : 'Actualizar'}
           </button>
@@ -1803,6 +1890,57 @@ function MetricsView({ apiBase, authHeaders }) {
       {status === 'loading' && !error && (
         <div className="row">
           <span className="state muted">Cargando métricas…</span>
+        </div>
+      )}
+      {status === 'ready' && (
+        <div className="metrics-summary" role="list">
+          <div className="metric-card metric-card-progress" role="listitem">
+            <div className="metric-card-top">
+              <span className="metric-label">Olivos cosechados</span>
+              <span className="metric-value">{harvestedOlivosDisplay}</span>
+            </div>
+            <span className="metric-meta">de {totalOlivosDisplay} olivos</span>
+            <div
+              className="metric-progress"
+              role="progressbar"
+              aria-label="Progreso de cosecha de olivos"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Number(safeProgress.toFixed(1))}
+              aria-valuetext={harvestProgressDisplay !== '-' ? `${harvestProgressDisplay}% completado` : 'Sin datos de cosecha'}
+            >
+              <div className="metric-progress-fill" style={{ width: `${safeProgress}%` }} />
+            </div>
+            <span className="metric-progress-text">
+              {harvestProgressDisplay !== '-' ? `${harvestProgressDisplay}% completado` : 'Sin datos de cosecha aún'}
+            </span>
+          </div>
+          <div className="metric-card" role="listitem">
+            <span className="metric-label">Olivos restantes</span>
+            <span className="metric-value">{olivosRestantesDisplay}</span>
+            <span className="metric-meta">Pendientes de cosecha</span>
+          </div>
+          <div className="metric-card" role="listitem">
+            <span className="metric-label">Kgs cosechados</span>
+            <span className="metric-value">{harvestedKgsDisplay}</span>
+            <span className="metric-meta">
+              {hasHarvestData ? `Media global: ${avgKgsGlobalDisplay} kgs/olivo` : 'Sin datos suficientes'}
+            </span>
+          </div>
+          <div className={`metric-card ${hasHarvestData ? '' : 'metric-card-muted'}`} role="listitem">
+            <span className="metric-label">Kgs restantes estimados</span>
+            <span className="metric-value">{estimatedRemainingDisplay}</span>
+            <span className="metric-meta">
+              {hasHarvestData ? `Total estimado: ${estimatedTotalDisplay}` : 'Necesita datos de cosecha'}
+            </span>
+          </div>
+          <div className="metric-card" role="listitem">
+            <span className="metric-label">Parcelas cosechadas</span>
+            <span className="metric-value">{harvestedParcelasDisplay}</span>
+            <span className="metric-meta">
+              de {parcelasTotalesDisplay} totales • {parcelasRestantesDisplay} pendientes
+            </span>
+          </div>
         </div>
       )}
       {status === 'ready' && rows.length === 0 && perParcelaRows.length === 0 && (
@@ -1830,6 +1968,15 @@ function MetricsView({ apiBase, authHeaders }) {
               aria-selected={metricsTab === 'perParcel'}
             >
               Media kgs/olivo
+            </button>
+            <button
+              type="button"
+              className={`btn ${metricsTab === 'estimates' ? '' : 'btn-outline'}`}
+              onClick={() => setMetricsTab('estimates')}
+              role="tab"
+              aria-selected={metricsTab === 'estimates'}
+            >
+              Estimaciones
             </button>
           </div>
         </>
@@ -1885,6 +2032,87 @@ function MetricsView({ apiBase, authHeaders }) {
           )}
         </>
       )}
+      {status === 'ready' && metricsTab === 'estimates' && (
+        <div className="metrics-estimates" role="region" aria-labelledby="metrics-estimates-heading">
+          <div className="metrics-estimates-header">
+            <div>
+              <h2 id="metrics-estimates-heading" style={{ margin: '0 0 0.3rem' }}>Estimaciones de cosecha</h2>
+              <p className="muted" style={{ margin: 0 }}>
+                Proyecciones calculadas con la media global de kilos por olivo cosechado hasta el momento.
+              </p>
+            </div>
+            <div className="estimate-pills">
+              <span className="pill">Progreso: {harvestProgressDisplay !== '-' ? `${harvestProgressDisplay}%` : '-'}</span>
+              <span className="pill">Olivos restantes: {olivosRestantesDisplay}</span>
+            </div>
+          </div>
+          {!hasHarvestData ? (
+            <div className="estimate-empty">
+              <span className="estimate-empty-title">Sin datos suficientes aún</span>
+              <span className="estimate-empty-text">
+                Una vez se registren kilos en al menos un olivo, mostraremos aquí las proyecciones de cosecha.
+              </span>
+            </div>
+          ) : (
+            <>
+              <div className="estimate-grid" role="list">
+                <div className="estimate-card estimate-card-primary" role="listitem">
+                  <span className="estimate-label">Kgs restantes estimados</span>
+                  <span className="estimate-value">{estimatedRemainingDisplay}</span>
+                  <span className="estimate-caption">
+                    Basado en {olivosRestantesDisplay} olivos pendientes ({harvestProgressDisplay !== '-' ? `${harvestProgressDisplay}%` : '-'} completado)
+                  </span>
+                </div>
+                <div className="estimate-card" role="listitem">
+                  <span className="estimate-label">Kgs totales estimados</span>
+                  <span className="estimate-value">{estimatedTotalDisplay}</span>
+                  <span className="estimate-caption">Incluye {harvestedKgsDisplay} kgs ya cosechados</span>
+                </div>
+                <div className="estimate-card" role="listitem">
+                  <span className="estimate-label">Media global kgs/olivo</span>
+                  <span className="estimate-value">{avgKgsGlobalDisplay}</span>
+                  <span className="estimate-caption">Calculada sobre {harvestedOlivosDisplay} olivos cosechados</span>
+                </div>
+              </div>
+              <div className="estimate-detail-card">
+                <h3>Detalle de cálculo</h3>
+                <div className="estimate-breakdown-grid">
+                  <div className="estimate-breakdown-item">
+                    <span className="estimate-breakdown-label">Olivos totales</span>
+                    <span className="estimate-breakdown-value">{totalOlivosDisplay}</span>
+                  </div>
+                  <div className="estimate-breakdown-item">
+                    <span className="estimate-breakdown-label">Olivos cosechados</span>
+                    <span className="estimate-breakdown-value">{harvestedOlivosDisplay}</span>
+                  </div>
+                  <div className="estimate-breakdown-item">
+                    <span className="estimate-breakdown-label">Olivos restantes</span>
+                    <span className="estimate-breakdown-value">{olivosRestantesDisplay}</span>
+                  </div>
+                  <div className="estimate-breakdown-item">
+                    <span className="estimate-breakdown-label">Kgs cosechados</span>
+                    <span className="estimate-breakdown-value">{harvestedKgsDisplay}</span>
+                  </div>
+                  <div className="estimate-breakdown-item">
+                    <span className="estimate-breakdown-label">Media global</span>
+                    <span className="estimate-breakdown-value">{avgKgsGlobalDisplay}</span>
+                  </div>
+                  <div className="estimate-breakdown-item">
+                    <span className="estimate-breakdown-label">Proyección total</span>
+                    <span className="estimate-breakdown-value">{estimatedTotalDisplay}</span>
+                  </div>
+                </div>
+                <div className="estimate-explainer">
+                  <strong>Cómo lo calculamos</strong>
+                  <p className="muted">
+                    Kgs restantes = Media global × Olivos restantes. A medida que se registren nuevos palots, la media se ajusta y las estimaciones se actualizarán automáticamente.
+                  </p>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
       {status === 'ready' && metricsTab === 'perParcel' && perParcelaRows.length === 0 && (
         <div className="row">
           <span className="muted">Sin datos de kgs por parcela aún.</span>
@@ -1897,14 +2125,58 @@ function MetricsView({ apiBase, authHeaders }) {
             <table className="metrics-table">
               <thead>
                 <tr>
-                  <th>Parcela</th>
-                  <th>Olivos totales</th>
-                  <th>Kgs cosechados</th>
-                  <th>Media kgs/olivo</th>
+                  <th aria-sort={perParcelaSort.column === 'nombre' ? (perParcelaSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                    <button
+                      type="button"
+                      className="metrics-sort"
+                      onClick={() => handlePerParcelaSort('nombre')}
+                    >
+                      <span>Parcela</span>
+                      <span className="sort-indicator">
+                        {perParcelaSort.column === 'nombre' ? (perParcelaSort.direction === 'asc' ? '▲' : '▼') : '↕'}
+                      </span>
+                    </button>
+                  </th>
+                  <th aria-sort={perParcelaSort.column === 'num_olivos' ? (perParcelaSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                    <button
+                      type="button"
+                      className="metrics-sort"
+                      onClick={() => handlePerParcelaSort('num_olivos')}
+                    >
+                      <span>Olivos totales</span>
+                      <span className="sort-indicator">
+                        {perParcelaSort.column === 'num_olivos' ? (perParcelaSort.direction === 'asc' ? '▲' : '▼') : '↕'}
+                      </span>
+                    </button>
+                  </th>
+                  <th aria-sort={perParcelaSort.column === 'total_kgs' ? (perParcelaSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                    <button
+                      type="button"
+                      className="metrics-sort"
+                      onClick={() => handlePerParcelaSort('total_kgs')}
+                    >
+                      <span>Kgs cosechados</span>
+                      <span className="sort-indicator">
+                        {perParcelaSort.column === 'total_kgs' ? (perParcelaSort.direction === 'asc' ? '▲' : '▼') : '↕'}
+                      </span>
+                    </button>
+                  </th>
+                  <th aria-sort={perParcelaSort.column === 'media_kgs_por_olivo' ? (perParcelaSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                    <button
+                      type="button"
+                      className="metrics-sort"
+                      onClick={() => handlePerParcelaSort('media_kgs_por_olivo')}
+                    >
+                      <span>Media kgs/olivo</span>
+                      <span className="sort-indicator">
+                        {perParcelaSort.column === 'media_kgs_por_olivo' ? (perParcelaSort.direction === 'asc' ? '▲' : '▼') : '↕'}
+                      </span>
+                    </button>
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {perParcelaRows.map((row) => (
+                {sortedPerParcelaRows.map((row) => (
                   <tr key={row.parcela_id ?? row.nombre}>
                     <td>{row.nombre || `Parcela #${row.parcela_id || '-'}`}</td>
                     <td>{formatNumber(row.num_olivos, 0)}</td>

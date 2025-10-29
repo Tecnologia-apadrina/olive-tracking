@@ -381,10 +381,280 @@ textarea:focus {
   background: #f9fafb;
 }
 
-.metrics-tabs {
+.metrics-table th button.metrics-sort {
   display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  padding: 0;
+  cursor: pointer;
+}
+
+.metrics-table th button.metrics-sort:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.metrics-table th button.metrics-sort .sort-indicator {
+  font-size: 0.75rem;
+  opacity: 0.6;
+  transition: opacity 0.15s ease;
+}
+
+.metrics-table th button.metrics-sort:hover .sort-indicator,
+.metrics-table th button.metrics-sort:focus-visible .sort-indicator {
+  opacity: 1;
+}
+
+.metrics-layout {
+  gap: 1.5rem;
+}
+
+.metrics-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.metrics-actions {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.metrics-summary {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.metric-card {
+  border: 1px solid var(--border);
+  background: #fff;
+  border-radius: 0.9rem;
+  padding: 0.85rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  min-height: 120px;
+}
+
+.metric-card-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.metric-label {
+  font-size: 0.76rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.metric-value {
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.1;
+}
+
+.metric-meta {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.metric-progress {
+  position: relative;
+  width: 100%;
+  height: 8px;
+  background: rgba(22, 163, 74, 0.12);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.metric-progress-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+
+.metric-progress-text {
+  font-size: 0.82rem;
+  color: var(--accent-600);
+  font-weight: 600;
+}
+
+.metric-card-progress {
+  background: linear-gradient(135deg, rgba(22, 163, 74, 0.12), rgba(22, 163, 74, 0.02));
+  border-color: rgba(22, 163, 74, 0.35);
+}
+
+.metric-card-progress .metric-value {
+  color: var(--accent-600);
+}
+
+.metric-card-muted {
+  background: #f3f4f6;
+  border-style: dashed;
+  border-color: rgba(107, 114, 128, 0.35);
+  color: var(--muted);
+}
+
+.metric-card-muted .metric-label,
+.metric-card-muted .metric-value,
+.metric-card-muted .metric-meta {
+  color: inherit;
+}
+
+.metrics-estimates {
+  display: grid;
+  gap: 1.5rem;
+}
+
+.metrics-estimates-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.estimate-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.estimate-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.estimate-card {
+  border: 1px solid var(--border);
+  background: #fff;
+  border-radius: 0.9rem;
+  padding: 1rem 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-height: 140px;
+  box-shadow: 0 8px 18px -12px rgba(17, 24, 39, 0.25);
+}
+
+.estimate-card-primary {
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.12), rgba(34, 197, 94, 0.03));
+  border-color: rgba(34, 197, 94, 0.5);
+}
+
+.estimate-label {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.estimate-value {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.1;
+}
+
+.estimate-caption {
+  font-size: 0.86rem;
+  color: var(--muted);
+}
+
+.estimate-detail-card {
+  border: 1px solid var(--border);
+  border-radius: 0.9rem;
+  padding: 1.1rem 1.25rem;
+  background: #fff;
+  display: grid;
+  gap: 1.25rem;
+}
+
+.estimate-detail-card h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.estimate-breakdown-grid {
+  display: grid;
+  gap: 0.85rem;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.estimate-breakdown-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.estimate-breakdown-label {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.estimate-breakdown-value {
+  font-size: 1.22rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.estimate-explainer {
+  border-top: 1px solid var(--border);
+  padding-top: 0.85rem;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.estimate-empty {
+  border: 1px dashed rgba(107, 114, 128, 0.45);
+  border-radius: 0.9rem;
+  padding: 1.5rem;
+  background: #f9fafb;
+  display: grid;
+  gap: 0.4rem;
+  text-align: center;
+}
+
+.estimate-empty-title {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.estimate-empty-text {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.metrics-tabs {
+  display: flex;
+  flex-wrap: wrap;
   gap: 0.5rem;
   margin: 0.5rem 0 1rem;
+  justify-content: flex-start;
 }
 
 .metrics-chart {
@@ -433,6 +703,12 @@ textarea:focus {
   writing-mode: vertical-rl;
 }
 
+@media (min-width: 860px) {
+  .metric-card-progress {
+    grid-column: span 2;
+  }
+}
+
 /* Responsive tweaks */
 @media (max-width: 768px) {
   body { padding: 1rem; }
@@ -454,6 +730,7 @@ textarea:focus {
   .btn { padding: 0.55rem 0.85rem; }
   .pill { font-size: 0.78rem; }
   .kg-input { max-width: 100%; }
+  .metric-value { font-size: 1.35rem; }
 }
 .tabs { display: inline-flex; gap: 0.4rem; margin-right: 0.5rem; }
 .export-group { display: inline-flex; gap: 0.35rem; }
