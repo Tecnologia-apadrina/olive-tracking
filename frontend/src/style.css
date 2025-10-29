@@ -532,6 +532,42 @@ textarea:focus {
   flex-wrap: wrap;
 }
 
+.metrics-estimates-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  align-items: stretch;
+  min-width: 240px;
+}
+
+.estimate-mode-control {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.estimate-mode-control label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.estimate-mode-select {
+  width: 100%;
+  padding: 0.55rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text);
+}
+
+.estimate-mode-select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--ring);
+  outline: none;
+}
+
 .estimate-pills {
   display: flex;
   flex-wrap: wrap;
@@ -539,10 +575,45 @@ textarea:focus {
   align-items: center;
 }
 
+.estimate-extra-form {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 200px;
+}
+
+.estimate-extra-form label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.estimate-extra-controls {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.estimate-extra-input {
+  width: 90px;
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text);
+}
+
+.estimate-extra-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--ring);
+  outline: none;
+}
+
 .estimate-grid {
   display: grid;
   gap: 1rem;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
 }
 
 .estimate-card {
@@ -553,8 +624,8 @@ textarea:focus {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  min-height: 140px;
-  box-shadow: 0 8px 18px -12px rgba(17, 24, 39, 0.25);
+  min-height: 150px;
+  box-shadow: 0 10px 24px -16px rgba(17, 24, 39, 0.25);
 }
 
 .estimate-card-primary {
@@ -647,6 +718,24 @@ textarea:focus {
 .estimate-empty-text {
   color: var(--muted);
   font-size: 0.9rem;
+}
+
+.metrics-estimates-actions .state.error {
+  font-size: 0.82rem;
+}
+
+@media (max-width: 768px) {
+  .metrics-estimates-actions {
+    align-items: stretch;
+    min-width: auto;
+  }
+  .estimate-extra-controls {
+    flex-wrap: wrap;
+  }
+  .estimate-extra-input {
+    width: 100%;
+    max-width: 140px;
+  }
 }
 
 .metrics-tabs {

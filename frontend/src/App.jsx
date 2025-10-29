@@ -1707,6 +1707,11 @@ function MetricsView({ apiBase, authHeaders }) {
   const [resumenTotales, setResumenTotales] = React.useState({ parcelas: 0, olivos: 0, kgs: 0, avgOlivos: 0, avgKgsPorOlivo: 0 });
   const [metricsTab, setMetricsTab] = React.useState('daily'); // daily | perParcel | estimates
   const [perParcelaSort, setPerParcelaSort] = React.useState({ column: 'nombre', direction: 'asc' });
+  const [estimateMode, setEstimateMode] = React.useState('kgs'); // kgs | olivos
+  const [estimateExtraPercent, setEstimateExtraPercent] = React.useState(10);
+  const [estimateExtraDraft, setEstimateExtraDraft] = React.useState('10');
+  const [estimateExtraError, setEstimateExtraError] = React.useState('');
+  const isOlivoMode = estimateMode === 'olivos';
 
   const load = React.useCallback(async () => {
     setStatus('loading');
@@ -1805,6 +1810,44 @@ function MetricsView({ apiBase, authHeaders }) {
   }, [rows, formatDay]);
 
   const olivosRestantes = Math.max(Number(totalOlivos || 0) - Number(resumenTotales.olivos || 0), 0);
+  const workingDayStats = React.useMemo(() => {
+    let count = 0;
+    let totalOlivosWorking = 0;
+    let totalKgsWorking = 0;
+    for (const row of rows) {
+      if (!row || !row.harvest_date) continue;
+      const dateObj = new Date(row.harvest_date);
+      if (Number.isNaN(dateObj.getTime())) continue;
+      if (dateObj.getDay() === 0) continue; // skip Sundays
+      const harvestedOlivos = Number(row.olivos_cosechados) || 0;
+      const harvestedKgs = Number(row.kgs_cosechados) || 0;
+      if (harvestedOlivos <= 0) continue;
+      count += 1;
+      totalOlivosWorking += harvestedOlivos;
+      totalKgsWorking += harvestedKgs > 0 ? harvestedKgs : 0;
+    }
+    return { count, totalOlivosWorking, totalKgsWorking };
+  }, [rows]);
+
+  const avgDailyOlivos = workingDayStats.count > 0
+    ? workingDayStats.totalOlivosWorking / workingDayStats.count
+    : 0;
+  const avgDailyKgs = workingDayStats.count > 0 && workingDayStats.totalKgsWorking > 0
+    ? workingDayStats.totalKgsWorking / workingDayStats.count
+    : 0;
+  const computeEstimatedFinishDate = React.useCallback((workingDays) => {
+    if (!Number.isFinite(workingDays) || workingDays <= 0) return null;
+    let remaining = Math.max(Math.ceil(workingDays), 0);
+    if (remaining === 0) return null;
+    const today = new Date();
+    const result = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    while (remaining > 0) {
+      result.setDate(result.getDate() + 1);
+      if (result.getDay() === 0) continue; // skip Sundays
+      remaining -= 1;
+    }
+    return result;
+  }, []);
   const hasHarvestData = resumenTotales.olivos > 0 && resumenTotales.kgs > 0;
   const avgKgsPorOlivoGlobal = Number(resumenTotales.avgKgsPorOlivo) || 0;
   const estimatedRemainingKgs = hasHarvestData && avgKgsPorOlivoGlobal > 0 && olivosRestantes > 0
@@ -1814,6 +1857,60 @@ function MetricsView({ apiBase, authHeaders }) {
   const harvestProgressPct = totalOlivos > 0
     ? Math.min((Number(resumenTotales.olivos || 0) / Number(totalOlivos)) * 100, 100)
     : 0;
+  const baseDaysRequired = avgDailyOlivos > 0 && olivosRestantes > 0
+    ? olivosRestantes / avgDailyOlivos
+    : null;
+  const baseDaysKgsRequired = avgDailyKgs > 0 && estimatedRemainingKgs > 0
+    ? estimatedRemainingKgs / avgDailyKgs
+    : null;
+  const extraFactor = 1 + (Number.isFinite(estimateExtraPercent) ? estimateExtraPercent : 0) / 100;
+  const workingDaysWithoutExtra = baseDaysRequired != null ? Math.ceil(baseDaysRequired) : null;
+  const workingDaysWithExtra = baseDaysRequired != null ? Math.ceil(baseDaysRequired * extraFactor) : null;
+  const workingDaysKgsWithoutExtra = baseDaysKgsRequired != null ? Math.ceil(baseDaysKgsRequired) : null;
+  const workingDaysKgsWithExtra = baseDaysKgsRequired != null ? Math.ceil(baseDaysKgsRequired * extraFactor) : null;
+  const estimatedFinishDate = React.useMemo(
+    () => (workingDaysWithExtra != null ? computeEstimatedFinishDate(workingDaysWithExtra) : null),
+    [computeEstimatedFinishDate, workingDaysWithExtra],
+  );
+  const estimatedFinishDateKgs = React.useMemo(
+    () => (workingDaysKgsWithExtra != null ? computeEstimatedFinishDate(workingDaysKgsWithExtra) : null),
+    [computeEstimatedFinishDate, workingDaysKgsWithExtra],
+  );
+  const estimatedFinishDisplay = estimatedFinishDate
+    ? estimatedFinishDate.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
+    : '-';
+  const estimatedFinishKgsDisplay = estimatedFinishDateKgs
+    ? estimatedFinishDateKgs.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
+    : '-';
+  const workingDaysWithExtraDisplay = workingDaysWithExtra != null ? formatNumber(workingDaysWithExtra, 0) : '-';
+  const workingDaysWithoutExtraDisplay = workingDaysWithoutExtra != null ? formatNumber(workingDaysWithoutExtra, 0) : '-';
+  const workingDaysKgsWithExtraDisplay = workingDaysKgsWithExtra != null ? formatNumber(workingDaysKgsWithExtra, 0) : '-';
+  const workingDaysKgsWithoutExtraDisplay = workingDaysKgsWithoutExtra != null ? formatNumber(workingDaysKgsWithoutExtra, 0) : '-';
+  const avgDailyOlivosDisplay = avgDailyOlivos > 0 ? formatNumber(avgDailyOlivos, 0) : '-';
+  const avgDailyKgsDisplay = avgDailyKgs > 0 ? formatNumber(avgDailyKgs) : '-';
+  const extraPercentDisplay = formatNumber(estimateExtraPercent, 0);
+  const hasOlivoPace = avgDailyOlivos > 0;
+  const hasKgsPace = avgDailyKgs > 0;
+  const handleEstimateModeChange = React.useCallback((event) => {
+    setEstimateMode(event.target.value);
+  }, []);
+
+  const applyEstimateExtraPercent = React.useCallback(() => {
+    const normalized = String(estimateExtraDraft || '').trim().replace(',', '.');
+    if (normalized === '') {
+      setEstimateExtraError('Introduce un porcentaje válido');
+      return;
+    }
+    const parsed = Number(normalized);
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed > 400) {
+      setEstimateExtraError('Introduce un porcentaje entre 0 y 400');
+      return;
+    }
+    setEstimateExtraPercent(parsed);
+    setEstimateExtraDraft(String(parsed));
+    setEstimateExtraError('');
+  }, [estimateExtraDraft]);
+
   const handlePerParcelaSort = React.useCallback((column) => {
     setPerParcelaSort((current) => {
       if (current.column === column) {
@@ -2041,9 +2138,49 @@ function MetricsView({ apiBase, authHeaders }) {
                 Proyecciones calculadas con la media global de kilos por olivo cosechado hasta el momento.
               </p>
             </div>
-            <div className="estimate-pills">
-              <span className="pill">Progreso: {harvestProgressDisplay !== '-' ? `${harvestProgressDisplay}%` : '-'}</span>
-              <span className="pill">Olivos restantes: {olivosRestantesDisplay}</span>
+            <div className="metrics-estimates-actions">
+              <div className="estimate-mode-control">
+                <label htmlFor="estimate-mode-select">Ver estimaciones por</label>
+                <select
+                  id="estimate-mode-select"
+                  className="estimate-mode-select"
+                  value={estimateMode}
+                  onChange={handleEstimateModeChange}
+                >
+                  <option value="kgs">Kilos estimados</option>
+                  <option value="olivos">Olivos restantes</option>
+                </select>
+              </div>
+              <form
+                className="estimate-extra-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  applyEstimateExtraPercent();
+                }}
+              >
+                <label htmlFor="estimate-extra-input">Margen días (%)</label>
+                <div className="estimate-extra-controls">
+                  <input
+                    id="estimate-extra-input"
+                    type="number"
+                    inputMode="decimal"
+                    min="0"
+                    step="0.1"
+                    value={estimateExtraDraft}
+                    onChange={(event) => {
+                      setEstimateExtraDraft(event.target.value);
+                      setEstimateExtraError('');
+                    }}
+                    className="estimate-extra-input"
+                  />
+                  <button type="submit" className="btn btn-outline btn-sm">Aplicar</button>
+                </div>
+                {estimateExtraError && <span className="state error">{estimateExtraError}</span>}
+              </form>
+              <div className="estimate-pills">
+                <span className="pill">Progreso: {harvestProgressDisplay !== '-' ? `${harvestProgressDisplay}%` : '-'}</span>
+                <span className="pill">Olivos restantes: {olivosRestantesDisplay}</span>
+              </div>
             </div>
           </div>
           {!hasHarvestData ? (
@@ -2053,62 +2190,217 @@ function MetricsView({ apiBase, authHeaders }) {
                 Una vez se registren kilos en al menos un olivo, mostraremos aquí las proyecciones de cosecha.
               </span>
             </div>
+          ) : (isOlivoMode && !hasOlivoPace) ? (
+            <div className="estimate-empty">
+              <span className="estimate-empty-title">Necesitamos más jornadas</span>
+              <span className="estimate-empty-text">
+                Registra al menos un día laborable con cosecha (de lunes a sábado) para estimar ritmos diarios y calcular la fecha final.
+              </span>
+            </div>
+          ) : (!isOlivoMode && !hasKgsPace) ? (
+            <div className="estimate-empty">
+              <span className="estimate-empty-title">Necesitamos más jornadas</span>
+              <span className="estimate-empty-text">
+                Registra días laborables con kilos cosechados para estimar el ritmo diario y calcular la proyección de kilos.
+              </span>
+            </div>
           ) : (
             <>
-              <div className="estimate-grid" role="list">
-                <div className="estimate-card estimate-card-primary" role="listitem">
-                  <span className="estimate-label">Kgs restantes estimados</span>
-                  <span className="estimate-value">{estimatedRemainingDisplay}</span>
-                  <span className="estimate-caption">
-                    Basado en {olivosRestantesDisplay} olivos pendientes ({harvestProgressDisplay !== '-' ? `${harvestProgressDisplay}%` : '-'} completado)
-                  </span>
-                </div>
-                <div className="estimate-card" role="listitem">
-                  <span className="estimate-label">Kgs totales estimados</span>
-                  <span className="estimate-value">{estimatedTotalDisplay}</span>
-                  <span className="estimate-caption">Incluye {harvestedKgsDisplay} kgs ya cosechados</span>
-                </div>
-                <div className="estimate-card" role="listitem">
-                  <span className="estimate-label">Media global kgs/olivo</span>
-                  <span className="estimate-value">{avgKgsGlobalDisplay}</span>
-                  <span className="estimate-caption">Calculada sobre {harvestedOlivosDisplay} olivos cosechados</span>
-                </div>
-              </div>
-              <div className="estimate-detail-card">
-                <h3>Detalle de cálculo</h3>
-                <div className="estimate-breakdown-grid">
-                  <div className="estimate-breakdown-item">
-                    <span className="estimate-breakdown-label">Olivos totales</span>
-                    <span className="estimate-breakdown-value">{totalOlivosDisplay}</span>
+              {isOlivoMode ? (
+                <>
+                  <div className="estimate-grid" role="list">
+                    <div className="estimate-card estimate-card-primary" role="listitem">
+                      <span className="estimate-label">Días estimados restantes</span>
+                      <span className="estimate-value">{workingDaysWithExtraDisplay}</span>
+                      <span className="estimate-caption">
+                        (Olivos restantes ÷ media diaria) × (1 + margen) · excluye domingos
+                      </span>
+                    </div>
+                    <div className="estimate-card" role="listitem">
+                      <span className="estimate-label">Fecha estimada de finalización</span>
+                      <span className="estimate-value">{estimatedFinishDisplay}</span>
+                      <span className="estimate-caption">Proyección aproximada sin contar domingos</span>
+                    </div>
+                    <div className="estimate-card" role="listitem">
+                      <span className="estimate-label">Días base sin margen</span>
+                      <span className="estimate-value">{workingDaysWithoutExtraDisplay}</span>
+                      <span className="estimate-caption">
+                        Media diaria de {avgDailyOlivosDisplay} olivos trabajados
+                      </span>
+                    </div>
+                    <div className="estimate-card" role="listitem">
+                      <span className="estimate-label">Kgs totales estimados</span>
+                      <span className="estimate-value">{estimatedTotalDisplay}</span>
+                      <span className="estimate-caption">Cosecha actual + estimación restante</span>
+                    </div>
                   </div>
-                  <div className="estimate-breakdown-item">
-                    <span className="estimate-breakdown-label">Olivos cosechados</span>
-                    <span className="estimate-breakdown-value">{harvestedOlivosDisplay}</span>
+                  <div className="estimate-detail-card">
+                    <h3>Detalle de cálculo</h3>
+                    <div className="estimate-breakdown-grid">
+                      <div className="estimate-breakdown-item">
+                        <span className="estimate-breakdown-label">Olivos totales</span>
+                        <span className="estimate-breakdown-value">{totalOlivosDisplay}</span>
+                      </div>
+                      <div className="estimate-breakdown-item">
+                        <span className="estimate-breakdown-label">Olivos cosechados</span>
+                        <span className="estimate-breakdown-value">{harvestedOlivosDisplay}</span>
+                      </div>
+                      <div className="estimate-breakdown-item">
+                        <span className="estimate-breakdown-label">Olivos restantes</span>
+                        <span className="estimate-breakdown-value">{olivosRestantesDisplay}</span>
+                      </div>
+                      <div className="estimate-breakdown-item">
+                        <span className="estimate-breakdown-label">Kgs cosechados</span>
+                        <span className="estimate-breakdown-value">{harvestedKgsDisplay}</span>
+                      </div>
+                      <div className="estimate-breakdown-item">
+                        <span className="estimate-breakdown-label">Kgs restantes</span>
+                        <span className="estimate-breakdown-value">{estimatedRemainingDisplay}</span>
+                      </div>
+                      <div className="estimate-breakdown-item">
+                        <span className="estimate-breakdown-label">Media global</span>
+                        <span className="estimate-breakdown-value">{avgKgsGlobalDisplay}</span>
+                      </div>
+                      <div className="estimate-breakdown-item">
+                        <span className="estimate-breakdown-label">Días base</span>
+                        <span className="estimate-breakdown-value">{workingDaysWithoutExtraDisplay}</span>
+                      </div>
+                      <div className="estimate-breakdown-item">
+                        <span className="estimate-breakdown-label">Margen aplicado</span>
+                        <span className="estimate-breakdown-value">{extraPercentDisplay}%</span>
+                      </div>
+                      <div className="estimate-breakdown-item">
+                        <span className="estimate-breakdown-label">Días estimados</span>
+                        <span className="estimate-breakdown-value">{workingDaysWithExtraDisplay}</span>
+                      </div>
+                      <div className="estimate-breakdown-item">
+                        <span className="estimate-breakdown-label">Proyección total</span>
+                        <span className="estimate-breakdown-value">{estimatedTotalDisplay}</span>
+                      </div>
+                    </div>
+                    <div className="estimate-explainer">
+                      <strong>Cómo lo calculamos</strong>
+                      <p className="muted">
+                        Kgs restantes = Media global × Olivos restantes. Días estimados = Olivos restantes / media diaria de olivos
+                        (solo días laborables) × (1 + margen). Puedes ajustar el margen desde la casilla superior y recalcular al instante.
+                      </p>
+                    </div>
                   </div>
-                  <div className="estimate-breakdown-item">
-                    <span className="estimate-breakdown-label">Olivos restantes</span>
-                    <span className="estimate-breakdown-value">{olivosRestantesDisplay}</span>
+                </>
+              ) : (
+                <>
+                  <div className="estimate-grid" role="list">
+                    <div className="estimate-card estimate-card-primary" role="listitem">
+                      <span className="estimate-label">Días estimados restantes (kgs)</span>
+                      <span className="estimate-value">{workingDaysKgsWithExtraDisplay}</span>
+                      <span className="estimate-caption">
+                        (Kgs restantes ÷ media diaria) × (1 + margen) · excluye domingos
+                      </span>
+                    </div>
+                    <div className="estimate-card" role="listitem">
+                      <span className="estimate-label">Fecha estimada de finalización</span>
+                      <span className="estimate-value">{estimatedFinishKgsDisplay}</span>
+                      <span className="estimate-caption">Proyección aproximada sin contar domingos</span>
+                    </div>
+                    <div className="estimate-card" role="listitem">
+                      <span className="estimate-label">Días base sin margen</span>
+                      <span className="estimate-value">{workingDaysKgsWithoutExtraDisplay}</span>
+                      <span className="estimate-caption">
+                        Media diaria de {avgDailyKgsDisplay} kgs cosechados
+                      </span>
+                    </div>
+                    <div className="estimate-card" role="listitem">
+                      <span className="estimate-label">Kgs restantes estimados</span>
+                      <span className="estimate-value">{estimatedRemainingDisplay}</span>
+                      <span className="estimate-caption">Calculados con la media global actual</span>
+                    </div>
+                    <div className="estimate-card" role="listitem">
+                      <span className="estimate-label">Kgs totales estimados</span>
+                      <span className="estimate-value">{estimatedTotalDisplay}</span>
+                      <span className="estimate-caption">Incluye {harvestedKgsDisplay} kgs ya cosechados</span>
+                    </div>
+                    <div className="estimate-card" role="listitem">
+                      <span className="estimate-label">Media global kgs/olivo</span>
+                      <span className="estimate-value">{avgKgsGlobalDisplay}</span>
+                      <span className="estimate-caption">Sobre {harvestedOlivosDisplay} olivos cosechados</span>
+                    </div>
+                    <div className="estimate-card" role="listitem">
+                      <span className="estimate-label">Olivos restantes</span>
+                      <span className="estimate-value">{olivosRestantesDisplay}</span>
+                      <span className="estimate-caption">
+                        Progreso actual {harvestProgressDisplay !== '-' ? `${harvestProgressDisplay}%` : '-'}
+                      </span>
+                    </div>
                   </div>
-                  <div className="estimate-breakdown-item">
-                    <span className="estimate-breakdown-label">Kgs cosechados</span>
-                    <span className="estimate-breakdown-value">{harvestedKgsDisplay}</span>
+                  <div className="estimate-detail-card">
+                    <h3>Detalle de cálculo</h3>
+                    <div className="estimate-breakdown-grid">
+                      <div className="estimate-breakdown-item">
+                        <span className="estimate-breakdown-label">Kgs cosechados</span>
+                        <span className="estimate-breakdown-value">{harvestedKgsDisplay}</span>
+                      </div>
+                      <div className="estimate-breakdown-item">
+                        <span className="estimate-breakdown-label">Media diaria kgs</span>
+                        <span className="estimate-breakdown-value">{avgDailyKgsDisplay}</span>
+                      </div>
+                      <div className="estimate-breakdown-item">
+                        <span className="estimate-breakdown-label">Kgs restantes estimados</span>
+                        <span className="estimate-breakdown-value">{estimatedRemainingDisplay}</span>
+                      </div>
+                      <div className="estimate-breakdown-item">
+                        <span className="estimate-breakdown-label">Kgs totales estimados</span>
+                        <span className="estimate-breakdown-value">{estimatedTotalDisplay}</span>
+                      </div>
+                      <div className="estimate-breakdown-item">
+                        <span className="estimate-breakdown-label">Días base</span>
+                        <span className="estimate-breakdown-value">{workingDaysKgsWithoutExtraDisplay}</span>
+                      </div>
+                      <div className="estimate-breakdown-item">
+                        <span className="estimate-breakdown-label">Margen aplicado</span>
+                        <span className="estimate-breakdown-value">{extraPercentDisplay}%</span>
+                      </div>
+                      <div className="estimate-breakdown-item">
+                        <span className="estimate-breakdown-label">Días estimados</span>
+                        <span className="estimate-breakdown-value">{workingDaysKgsWithExtraDisplay}</span>
+                      </div>
+                      <div className="estimate-breakdown-item">
+                        <span className="estimate-breakdown-label">Fecha estimada</span>
+                        <span className="estimate-breakdown-value">{estimatedFinishKgsDisplay}</span>
+                      </div>
+                      <div className="estimate-breakdown-item">
+                        <span className="estimate-breakdown-label">Media global kgs/olivo</span>
+                        <span className="estimate-breakdown-value">{avgKgsGlobalDisplay}</span>
+                      </div>
+                      <div className="estimate-breakdown-item">
+                        <span className="estimate-breakdown-label">Olivos cosechados</span>
+                        <span className="estimate-breakdown-value">{harvestedOlivosDisplay}</span>
+                      </div>
+                      <div className="estimate-breakdown-item">
+                        <span className="estimate-breakdown-label">Olivos restantes</span>
+                        <span className="estimate-breakdown-value">{olivosRestantesDisplay}</span>
+                      </div>
+                      <div className="estimate-breakdown-item">
+                        <span className="estimate-breakdown-label">Olivos totales</span>
+                        <span className="estimate-breakdown-value">{totalOlivosDisplay}</span>
+                      </div>
+                      <div className="estimate-breakdown-item">
+                        <span className="estimate-breakdown-label">Progreso actual</span>
+                        <span className="estimate-breakdown-value">
+                          {harvestProgressDisplay !== '-' ? `${harvestProgressDisplay}%` : '-'}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="estimate-explainer">
+                      <strong>Cómo lo calculamos</strong>
+                      <p className="muted">
+                        Kgs restantes = Media global × Olivos restantes. Días estimados = Kgs restantes / media diaria de kgs
+                        (solo días laborables) × (1 + margen). Recalculamos la media en cuanto se registra nueva cosecha
+                        para mantener las estimaciones al día.
+                      </p>
+                    </div>
                   </div>
-                  <div className="estimate-breakdown-item">
-                    <span className="estimate-breakdown-label">Media global</span>
-                    <span className="estimate-breakdown-value">{avgKgsGlobalDisplay}</span>
-                  </div>
-                  <div className="estimate-breakdown-item">
-                    <span className="estimate-breakdown-label">Proyección total</span>
-                    <span className="estimate-breakdown-value">{estimatedTotalDisplay}</span>
-                  </div>
-                </div>
-                <div className="estimate-explainer">
-                  <strong>Cómo lo calculamos</strong>
-                  <p className="muted">
-                    Kgs restantes = Media global × Olivos restantes. A medida que se registren nuevos palots, la media se ajusta y las estimaciones se actualizarán automáticamente.
-                  </p>
-                </div>
-              </div>
+                </>
+              )}
             </>
           )}
         </div>
