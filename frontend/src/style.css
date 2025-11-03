@@ -193,6 +193,7 @@ textarea:focus {
 .header { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
 .header .header-nav { display: flex; align-items: center; gap: 0.5rem; }
 .hamburger { display: none; background: transparent; border: 1px solid var(--border); border-radius: 8px; padding: 0.45rem 0.6rem; cursor: pointer; }
+.mobile-app-link { display: none; }
 
 /* Cells layout for relations */
 .cells {
@@ -806,6 +807,8 @@ textarea:focus {
   .hamburger { display: inline-flex; align-items: center; justify-content: center; }
   .header .header-nav { display: none; width: 100%; margin-top: 0.5rem; }
   .header .header-nav.open { display: grid; grid-auto-rows: min-content; gap: 0.5rem; }
+  .mobile-app-link { display: inline-flex; align-items: center; justify-content: center; }
+  .header .header-nav .header-app-link { display: none; }
   .list.two-col .list-row { grid-template-columns: 1fr; gap: 0.35rem; }
   .kv { grid-template-columns: 1fr; }
   .cell-inline { flex-wrap: wrap; }

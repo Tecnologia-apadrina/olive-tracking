@@ -866,10 +866,6 @@ function App() {
       setPalotAddError('Introduce un número antes de añadir.');
       return;
     }
-    if (!parcelaHasPct) {
-      addPalotToCustomList();
-      return;
-    }
     if (palotList.includes(trimmed)) {
       setPalotAddError('Ese palot ya está en la lista.');
       return;
@@ -880,7 +876,7 @@ function App() {
       return;
     }
     setPalotAddError('');
-    setPalotKgs(String(DEFAULT_CEDENTE_KGS));
+    setPalotKgs('');
     getParcelaById(parcelaId)
       .catch(() => null)
       .then((parcelaInfo) => persistPalotCodes({
@@ -1415,13 +1411,20 @@ function App() {
                 <img src="/Trazoliva-trans_tiny.png" alt="Trazoliva" className="logo clickable" />
               </a>
             </div>
+            <a
+              className={`btn ${view === 'main' ? '' : 'btn-outline'} mobile-app-link`}
+              href="/"
+              onClick={(e) => { e.preventDefault(); navigate('/'); setMenuOpen(false); }}
+            >
+              App
+            </a>
             <button className="hamburger" aria-label="Abrir menú" aria-expanded={menuOpen} onClick={() => setMenuOpen(o => !o)}>
               ☰
             </button>
             <div className={`header-nav ${menuOpen ? 'open' : ''}`}>
               <span className="pill">Sesión: {authUser}</span>
               {authRole && <span className="pill">Rol: {authRole}</span>}
-              <a className={`btn ${view === 'main' ? '' : 'btn-outline'}`} href="/" onClick={(e) => { e.preventDefault(); navigate('/'); setMenuOpen(false); }}>App</a>
+              <a className={`btn ${view === 'main' ? '' : 'btn-outline'} header-app-link`} href="/" onClick={(e) => { e.preventDefault(); navigate('/'); setMenuOpen(false); }}>App</a>
               {authRole === 'admin' && (
                 <a className={`btn ${view === 'users' ? '' : 'btn-outline'}`} href="/users" onClick={(e) => { e.preventDefault(); navigate('/users'); setMenuOpen(false); }}>Usuarios</a>
               )}
