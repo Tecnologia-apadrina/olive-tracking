@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs/promises');
 
 const DEFAULT_BACKUP_DIR = process.env.DB_BACKUP_DIR || path.join(process.cwd(), 'backups');
+const DEFAULT_LOG_FILE = process.env.DB_BACKUP_LOG || path.join(process.cwd(), 'logs', 'backup.log');
 const DEFAULT_HOUR = Number.isFinite(Number(process.env.DB_BACKUP_HOUR))
   ? Number(process.env.DB_BACKUP_HOUR)
   : 0;
@@ -13,6 +14,26 @@ const CONNECTION_STRING = process.env.DATABASE_URL || '';
 
 let schedulerStarted = false;
 let scheduledTimer = null;
+
+async function appendLogLine(logFile, level, message, error) {
+  const timestamp = new Date().toISOString();
+  const base = `[${timestamp}] [${level}] ${message}`;
+  const detail = error
+    ? error instanceof Error
+      ? error.stack || error.message
+      : String(error)
+    : '';
+  const line = detail ? `${base} | ${detail}\n` : `${base}\n`;
+
+  await fs.mkdir(path.dirname(logFile), { recursive: true });
+  await fs.appendFile(logFile, line);
+}
+
+function persistLogSafe(logFile, level, message, error) {
+  appendLogLine(logFile, level, message, error).catch((logErr) => {
+    console.error('[backup] No se pudo escribir en el archivo de log', logErr);
+  });
+}
 
 const runPgDump = (args) => new Promise((resolve, reject) => {
   execFile('pg_dump', args, { env: process.env }, (error, stdout, stderr) => {
@@ -31,6 +52,7 @@ const sanitizeTimestamp = (date) => date.toISOString().replace(/[:.]/g, '-');
 async function runBackup({
   connectionString = CONNECTION_STRING,
   outputDir = DEFAULT_BACKUP_DIR,
+  logFile = DEFAULT_LOG_FILE,
 } = {}) {
   if (!connectionString) {
     throw new Error('DATABASE_URL no está configurada; no se puede ejecutar pg_dump');
@@ -46,6 +68,9 @@ async function runBackup({
   const args = [`--dbname=${connectionString}`, '--format=custom', `--file=${filePath}`];
 
   await runPgDump(args);
+  const message = `[backup] Copia de seguridad creada en ${filePath}`;
+  console.log(message);
+  persistLogSafe(logFile, 'INFO', message);
 
   return { fileName, filePath };
 }
@@ -60,17 +85,17 @@ function computeDelayMs(hour, minute) {
   return next.getTime() - now.getTime();
 }
 
-function scheduleNextRun(hour, minute, connectionString, outputDir) {
+function scheduleNextRun(hour, minute, connectionString, outputDir, logFile) {
   const delay = computeDelayMs(hour, minute);
   if (scheduledTimer) clearTimeout(scheduledTimer);
   scheduledTimer = setTimeout(async () => {
     try {
-      const result = await runBackup({ connectionString, outputDir });
-      console.log(`[backup] Copia de seguridad creada en ${result.filePath}`);
+      await runBackup({ connectionString, outputDir, logFile });
     } catch (err) {
       console.error('[backup] Error al ejecutar la copia de seguridad', err);
+      persistLogSafe(logFile, 'ERROR', '[backup] Error al ejecutar la copia de seguridad', err);
     } finally {
-      scheduleNextRun(hour, minute, connectionString, outputDir);
+      scheduleNextRun(hour, minute, connectionString, outputDir, logFile);
     }
   }, delay);
   if (typeof scheduledTimer.unref === 'function') {
@@ -83,12 +108,14 @@ function startDailyBackups({
   outputDir = DEFAULT_BACKUP_DIR,
   hour = DEFAULT_HOUR,
   minute = DEFAULT_MINUTE,
+  logFile = DEFAULT_LOG_FILE,
 } = {}) {
   if (schedulerStarted) return;
   schedulerStarted = true;
 
   if (!connectionString) {
     console.warn('[backup] Scheduler deshabilitado: falta DATABASE_URL');
+    persistLogSafe(logFile, 'WARN', '[backup] Scheduler deshabilitado: falta DATABASE_URL');
     return;
   }
 
@@ -97,8 +124,10 @@ function startDailyBackups({
   const paddedHour = String(safeHour).padStart(2, '0');
   const paddedMinute = String(safeMinute).padStart(2, '0');
 
-  scheduleNextRun(safeHour, safeMinute, connectionString, outputDir);
-  console.log(`[backup] Copia diaria programada a las ${paddedHour}:${paddedMinute} en ${path.resolve(outputDir)}`);
+  scheduleNextRun(safeHour, safeMinute, connectionString, outputDir, logFile);
+  const startMessage = `[backup] Copia diaria programada a las ${paddedHour}:${paddedMinute} en ${path.resolve(outputDir)}`;
+  console.log(startMessage);
+  persistLogSafe(logFile, 'INFO', startMessage);
 }
 
 module.exports = {
