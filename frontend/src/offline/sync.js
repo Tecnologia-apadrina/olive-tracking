@@ -84,7 +84,7 @@ export async function syncUp(apiBase, authHeaders) {
     }
     if (op.type === 'createRelation') {
       const payload = op.payload || {};
-      const { parcela_id, palot_codigo, kgs, reservado_aderezo, notas } = payload;
+      const { parcela_id, palot_codigo, kgs, reservado_aderezo, notas, parcela_etiqueta_ids } = payload;
       if (!parcela_id || !palot_codigo) {
         await removePendingOp(op.id);
         processed.push(op.id);
@@ -92,7 +92,12 @@ export async function syncUp(apiBase, authHeaders) {
       }
       const palot = await ensurePalot(palot_codigo);
       const normalizedNotes = typeof notas === 'string' && notas.trim().length === 0 ? null : notas;
-      await fetchJson(`${apiBase}/parcelas/${parcela_id}/palots`, {
+      const etiquetaIds = Array.isArray(parcela_etiqueta_ids)
+        ? parcela_etiqueta_ids
+            .map((value) => Number(value))
+            .filter((value, idx, arr) => Number.isInteger(value) && value > 0 && arr.indexOf(value) === idx)
+        : [];
+      const createdRelation = await fetchJson(`${apiBase}/parcelas/${parcela_id}/palots`, {
         method: 'POST',
         headers: buildHeaders(authHeaders, { 'Content-Type': 'application/json' }),
         body: JSON.stringify({
@@ -100,9 +105,10 @@ export async function syncUp(apiBase, authHeaders) {
           kgs: kgs != null ? kgs : null,
           reservado_aderezo: reservado_aderezo != null ? reservado_aderezo : false,
           notas: normalizedNotes,
+          etiquetas: etiquetaIds,
         }),
       });
-      await replaceRelationPlaceholder(parcela_id, palot_codigo, null);
+      await replaceRelationPlaceholder(parcela_id, palot_codigo, createdRelation);
       await removePendingOp(op.id);
       processed.push(op.id);
       continue;

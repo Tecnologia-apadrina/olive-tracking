@@ -1,6 +1,28 @@
+process.env.USE_MEM = '1';
+process.env.ADMIN_USER = process.env.ADMIN_USER || '1';
+process.env.ADMIN_PASS = process.env.ADMIN_PASS || 'pwd';
+
 const request = require('supertest');
 const app = require('../src/app');
 const db = require('../src/db');
+const { hashPassword } = require('../src/utils/password');
+
+beforeAll(async () => {
+  const ensureUsers = [
+    { username: '2', password: 'pwd', role: 'campo' },
+    { username: '3', password: 'pwd', role: 'campo' },
+  ];
+  for (const user of ensureUsers) {
+    const hash = hashPassword(user.password);
+    const existing = await db.public.many('SELECT id FROM users WHERE username = $1', [user.username]);
+    if (!existing || existing.length === 0) {
+      const esc = (value) => String(value).replace(/'/g, "''");
+      await db.public.none(
+        `INSERT INTO users(username, password_hash, role) VALUES('${esc(user.username)}', '${esc(hash)}', '${esc(user.role)}')`
+      );
+    }
+  }
+});
 
 describe('Palots API', () => {
   it('allows creating and listing palots', async () => {

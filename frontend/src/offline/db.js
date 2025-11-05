@@ -1,7 +1,7 @@
 import { openDB } from 'idb';
 
 const DB_NAME = 'olive-tracking-offline';
-const DB_VERSION = 1;
+const DB_VERSION = 3;
 
 let dbPromise;
 
@@ -37,6 +37,12 @@ function getDb() {
         if (!db.objectStoreNames.contains('pendingOps')) {
           db.createObjectStore('pendingOps', { keyPath: 'id', autoIncrement: true });
         }
+        if (!db.objectStoreNames.contains('tags')) {
+          db.createObjectStore('tags', { keyPath: 'id' });
+        }
+        if (!db.objectStoreNames.contains('parajes')) {
+          db.createObjectStore('parajes', { keyPath: 'id' });
+        }
       }
     });
   }
@@ -49,7 +55,7 @@ export async function initOfflineStore() {
 
 export async function clearAllOfflineData() {
   const db = await getDb();
-  const stores = ['parcelas', 'olivos', 'palots', 'relations', 'pendingOps'];
+  const stores = ['parcelas', 'olivos', 'palots', 'relations', 'pendingOps', 'tags', 'parajes'];
   const tx = db.transaction(stores, 'readwrite');
   await Promise.all(stores.map(async (name) => tx.objectStore(name).clear()));
   await tx.done;
@@ -105,6 +111,67 @@ function normalizeBool(value) {
   return Boolean(value);
 }
 
+function normalizeTag(entry) {
+  if (!entry && entry !== 0) return null;
+  if (typeof entry === 'number') {
+    if (!Number.isInteger(entry)) return null;
+    return { id: entry, nombre: '' };
+  }
+  if (typeof entry === 'string') {
+    const trimmed = entry.trim();
+    if (!trimmed) return null;
+    const num = Number(trimmed);
+    if (Number.isInteger(num)) {
+      return { id: num, nombre: '' };
+    }
+    return null;
+  }
+  const idRaw = entry.id != null ? entry.id : (entry.ID != null ? entry.ID : entry.value);
+  const id = Number(idRaw);
+  if (!Number.isInteger(id)) return null;
+  const nameRaw = entry.nombre != null ? entry.nombre : (entry.name != null ? entry.name : entry.label);
+  const nombre = nameRaw == null ? '' : String(nameRaw).trim();
+  return { id, nombre };
+}
+
+function normalizeTagList(list, fallbackIds = []) {
+  const normalized = [];
+  const seen = new Set();
+  const push = (tag) => {
+    if (!tag) return;
+    if (!Number.isInteger(tag.id)) return;
+    if (seen.has(tag.id)) return;
+    seen.add(tag.id);
+    const name = tag.nombre != null ? String(tag.nombre).trim() : '';
+    normalized.push({ id: tag.id, nombre: name });
+  };
+  if (Array.isArray(list)) {
+    for (const entry of list) {
+      const tag = normalizeTag(entry);
+      if (tag) push(tag);
+    }
+  }
+  if (normalized.length === 0 && Array.isArray(fallbackIds)) {
+    for (const entry of fallbackIds) {
+      const tag = normalizeTag(entry);
+      if (tag) push(tag);
+    }
+  }
+  return normalized;
+}
+
+function extractTagIds(tags) {
+  if (!Array.isArray(tags)) return [];
+  const ids = [];
+  for (const tag of tags) {
+    const num = Number(tag && tag.id != null ? tag.id : tag);
+    if (Number.isInteger(num) && !ids.includes(num)) {
+      ids.push(num);
+    }
+  }
+  return ids;
+}
+
 function makePalotRecord(palot) {
   const hasServerId = palot.id != null;
   const fallbackLocalId = palot.localId ? `local-${palot.localId}` : `local-${randomId()}`;
@@ -126,6 +193,8 @@ function makeRelationRecord(rel) {
   const fallbackLocalId = rel.localId ? `local-${rel.localId}` : `local-${randomId()}`;
   const key = rel.key || (hasServerId ? `srv-${rel.id}` : fallbackLocalId);
   const relationId = rel.id != null ? rel.id : null;
+  const parcelTags = normalizeTagList(rel.parcela_etiquetas, rel.parcela_etiqueta_ids);
+  const parcelTagIds = extractTagIds(parcelTags.length ? parcelTags : rel.parcela_etiqueta_ids);
   return {
     key,
     id: relationId,
@@ -141,6 +210,8 @@ function makeRelationRecord(rel) {
     parcela_num_olivos: normalizeNumber(rel.parcela_num_olivos),
     parcela_hectareas: normalizeNumber(rel.parcela_hectareas),
     parcela_nombre_interno: rel.parcela_nombre_interno != null ? rel.parcela_nombre_interno : '',
+    parcela_paraje_id: normalizeNumber(rel.parcela_paraje_id),
+    parcela_paraje_nombre: rel.parcela_paraje_nombre != null ? rel.parcela_paraje_nombre : '',
     palot_id: rel.palot_id != null ? rel.palot_id : null,
     palot_codigo: rel.palot_codigo != null ? rel.palot_codigo : '',
     palot_procesado: rel.palot_procesado == null ? null : Boolean(rel.palot_procesado),
@@ -150,6 +221,8 @@ function makeRelationRecord(rel) {
     created_by: rel.created_by != null ? rel.created_by : null,
     created_by_username: rel.created_by_username != null ? rel.created_by_username : '',
     created_at: rel.created_at || new Date().toISOString(),
+    parcela_etiquetas: parcelTags,
+    parcela_etiqueta_ids: parcelTagIds,
     pending: Boolean(rel.pending),
     source: rel.source || (hasServerId ? 'server' : 'local'),
   };
@@ -182,6 +255,8 @@ function toUiRelation(record) {
     parcela_num_olivos: record.parcela_num_olivos != null ? record.parcela_num_olivos : null,
     parcela_hectareas: record.parcela_hectareas != null ? record.parcela_hectareas : null,
     parcela_nombre_interno: record.parcela_nombre_interno,
+    parcela_paraje_id: record.parcela_paraje_id != null ? record.parcela_paraje_id : null,
+    parcela_paraje_nombre: record.parcela_paraje_nombre != null ? record.parcela_paraje_nombre : '',
     palot_id: record.palot_id != null ? record.palot_id : record.key,
     palot_codigo: record.palot_codigo,
     palot_procesado: record.palot_procesado == null ? null : Boolean(record.palot_procesado),
@@ -191,6 +266,10 @@ function toUiRelation(record) {
     created_by: record.created_by,
     created_by_username: record.created_by_username,
     created_at: record.created_at,
+    parcela_etiquetas: Array.isArray(record.parcela_etiquetas)
+      ? record.parcela_etiquetas.map((t) => ({ id: Number(t.id), nombre: t.nombre != null ? String(t.nombre) : '' }))
+      : [],
+    parcela_etiqueta_ids: extractTagIds(record.parcela_etiqueta_ids != null ? record.parcela_etiqueta_ids : record.parcela_etiquetas),
     pending: record.pending,
     source: record.source,
     key: record.key,
@@ -204,14 +283,81 @@ async function clearAndPut(store, rows, transform) {
   }
 }
 
-export async function saveServerSnapshot({ parcelas = [], olivos = [], palots = [], relations = [] }) {
+export async function saveServerSnapshot({
+  parcelas = [],
+  olivos = [],
+  palots = [],
+  relations = [],
+  etiquetas = [],
+  parcelas_etiquetas = [],
+  parajes = [],
+}) {
   const db = await getDb();
-  const tx = db.transaction(['parcelas', 'olivos', 'palots', 'relations', 'pendingOps'], 'readwrite');
-  await clearAndPut(tx.objectStore('parcelas'), parcelas, (row) => ({
-    ...row,
-    id: normalizeNumber(row.id),
-    num_olivos: normalizeNumber(row.num_olivos),
-    hectareas: normalizeNumber(row.hectareas),
+  const tx = db.transaction(['parcelas', 'olivos', 'palots', 'relations', 'pendingOps', 'tags', 'parajes'], 'readwrite');
+  const tagsStore = tx.objectStore('tags');
+  const parcelasStore = tx.objectStore('parcelas');
+  const parajesStore = tx.objectStore('parajes');
+  const tagMap = new Map();
+  for (const rawTag of Array.isArray(etiquetas) ? etiquetas : []) {
+    const tag = normalizeTag(rawTag);
+    if (tag) {
+      tagMap.set(tag.id, { id: tag.id, nombre: tag.nombre });
+    }
+  }
+  const parajeMap = new Map();
+  for (const rawParaje of Array.isArray(parajes) ? parajes : []) {
+    const id = normalizeNumber(rawParaje.id);
+    if (!Number.isInteger(id) || id <= 0) continue;
+    if (!parajeMap.has(id)) {
+      parajeMap.set(id, {
+        id,
+        nombre: rawParaje.nombre != null ? String(rawParaje.nombre) : '',
+      });
+    }
+  }
+  const parcelTagMap = new Map();
+  for (const link of Array.isArray(parcelas_etiquetas) ? parcelas_etiquetas : []) {
+    const parcelaId = normalizeNumber(link.id_parcela);
+    const tagId = normalizeNumber(link.id_etiqueta);
+    if (!Number.isInteger(parcelaId) || !Number.isInteger(tagId)) continue;
+    if (!parcelTagMap.has(parcelaId)) parcelTagMap.set(parcelaId, []);
+    const arr = parcelTagMap.get(parcelaId);
+    if (!arr.includes(tagId)) arr.push(tagId);
+  }
+  await clearAndPut(tagsStore, Array.from(tagMap.values()), (tag) => ({
+    id: Number(tag.id),
+    nombre: tag.nombre != null ? String(tag.nombre) : '',
+  }));
+  await clearAndPut(parcelasStore, parcelas, (row) => {
+    const id = normalizeNumber(row.id);
+    const parcelTagIds = parcelTagMap.get(id) || [];
+    const parcelTags = parcelTagIds
+      .map((tagId) => tagMap.get(tagId))
+      .filter(Boolean)
+      .map((tag) => ({ id: Number(tag.id), nombre: tag.nombre != null ? String(tag.nombre) : '' }));
+    if (row.paraje_id != null) {
+      const parajeId = normalizeNumber(row.paraje_id);
+      if (Number.isInteger(parajeId) && parajeId > 0 && !parajeMap.has(parajeId)) {
+        parajeMap.set(parajeId, {
+          id: parajeId,
+          nombre: row.paraje_nombre != null ? String(row.paraje_nombre) : '',
+        });
+      }
+    }
+    return {
+      ...row,
+      id,
+      num_olivos: normalizeNumber(row.num_olivos),
+      hectareas: normalizeNumber(row.hectareas),
+      etiquetas: parcelTags,
+      etiqueta_ids: parcelTagIds.slice(),
+      paraje_id: row.paraje_id != null ? normalizeNumber(row.paraje_id) : null,
+      paraje_nombre: row.paraje_nombre != null ? String(row.paraje_nombre) : '',
+    };
+  });
+  await clearAndPut(parajesStore, Array.from(parajeMap.values()), (row) => ({
+    id: Number(row.id),
+    nombre: row.nombre != null ? String(row.nombre) : '',
   }));
   await clearAndPut(tx.objectStore('olivos'), olivos, (row) => ({ ...row, id: normalizeNumber(row.id), id_parcela: normalizeNumber(row.id_parcela) }));
   await clearAndPut(tx.objectStore('palots'), palots, (row) => makePalotRecord({ ...row, source: 'server', pending: false }));
@@ -225,16 +371,19 @@ async function applyPendingOpsToStores(tx) {
   const pendingStore = tx.objectStore('pendingOps');
   const palotsStore = tx.objectStore('palots');
   const relationsStore = tx.objectStore('relations');
+  const parcelasStore = tx.objectStore('parcelas');
+  const tagsStore = tx.objectStore('tags');
+  const parajesStore = tx.objectStore('parajes');
   let cursor = await pendingStore.openCursor();
   while (cursor) {
-    await applyPendingOp(cursor.value, { palotsStore, relationsStore });
+    await applyPendingOp(cursor.value, { palotsStore, relationsStore, parcelasStore, tagsStore, parajesStore });
     cursor = await cursor.continue();
   }
 }
 
 async function applyPendingOp(op, stores) {
   if (!op || !op.type) return;
-  const { palotsStore, relationsStore } = stores;
+  const { palotsStore, relationsStore, parcelasStore, tagsStore, parajesStore } = stores;
   if (op.type === 'ensurePalot') {
     const payload = op.payload || {};
     const codigo = payload.codigo;
@@ -275,7 +424,48 @@ async function applyPendingOp(op, stores) {
       pending: true,
       source: 'local',
       localId: op.localId || op.id,
+      parcela_etiquetas: payload.parcela_etiquetas,
+      parcela_etiqueta_ids: payload.parcela_etiqueta_ids,
+      parcela_paraje_id: payload.parcela_paraje_id != null ? payload.parcela_paraje_id : null,
+      parcela_paraje_nombre: payload.parcela_paraje_nombre != null ? payload.parcela_paraje_nombre : '',
     }));
+    if (parcelasStore) {
+      const parcelaId = Number(payload.parcela_id);
+      if (Number.isInteger(parcelaId)) {
+        const record = await parcelasStore.get(parcelaId);
+        if (record) {
+          const tagIds = extractTagIds(payload.parcela_etiqueta_ids || payload.parcela_etiquetas);
+          let tags = Array.isArray(payload.parcela_etiquetas) ? normalizeTagList(payload.parcela_etiquetas, tagIds) : [];
+          if (tags.length === 0 && tagsStore && tagIds.length > 0) {
+            tags = [];
+            for (const tagId of tagIds) {
+              const tagRecord = await tagsStore.get(tagId);
+              if (tagRecord) {
+                tags.push({ id: Number(tagRecord.id), nombre: tagRecord.nombre || '' });
+              } else {
+                tags.push({ id: Number(tagId), nombre: '' });
+              }
+            }
+          }
+          record.etiquetas = tags;
+          record.etiqueta_ids = extractTagIds(tags);
+          if (payload.parcela_paraje_id != null) {
+            record.paraje_id = Number(payload.parcela_paraje_id);
+            record.paraje_nombre = payload.parcela_paraje_nombre != null ? String(payload.parcela_paraje_nombre) : '';
+            if (parajesStore && Number.isInteger(record.paraje_id) && record.paraje_id > 0) {
+              const existingParaje = await parajesStore.get(record.paraje_id);
+              if (!existingParaje) {
+                await parajesStore.put({
+                  id: record.paraje_id,
+                  nombre: record.paraje_nombre || '',
+                });
+              }
+            }
+          }
+          await parcelasStore.put(record);
+        }
+      }
+    }
   }
 }
 
@@ -337,7 +527,7 @@ export async function listParcelas() {
 
 export async function enqueuePendingOp(op) {
   const db = await getDb();
-  const tx = db.transaction(['pendingOps', 'palots', 'relations'], 'readwrite');
+  const tx = db.transaction(['pendingOps', 'palots', 'relations', 'parcelas', 'tags', 'parajes'], 'readwrite');
   const id = await tx.objectStore('pendingOps').add({
     ...op,
     createdAt: op.createdAt || new Date().toISOString(),
@@ -346,6 +536,9 @@ export async function enqueuePendingOp(op) {
   await applyPendingOp({ ...op, id }, {
     palotsStore: tx.objectStore('palots'),
     relationsStore: tx.objectStore('relations'),
+    parcelasStore: tx.objectStore('parcelas'),
+    tagsStore: tx.objectStore('tags'),
+    parajesStore: tx.objectStore('parajes'),
   });
   await tx.done;
   return id;
@@ -367,13 +560,16 @@ export async function getPendingOps() {
 
 export async function removePendingOp(id) {
   const db = await getDb();
-  const tx = db.transaction(['pendingOps', 'palots', 'relations'], 'readwrite');
+  const tx = db.transaction(['pendingOps', 'palots', 'relations', 'parcelas', 'tags', 'parajes'], 'readwrite');
   const store = tx.objectStore('pendingOps');
   const op = await store.get(id);
   await store.delete(id);
   if (op) {
     const palotsStore = tx.objectStore('palots');
     const relationsStore = tx.objectStore('relations');
+    const parcelasStore = tx.objectStore('parcelas');
+    const tagsStore = tx.objectStore('tags');
+    const parajesStore = tx.objectStore('parajes');
     // Remove placeholders so that snapshot refresh repopulates fresh data
     if (op.type === 'ensurePalot') {
       const ensurePayload = op.payload || {};
@@ -395,6 +591,37 @@ export async function removePendingOp(id) {
             await relationsStore.delete(rel.key);
           }
         }
+        if (parcelasStore) {
+          const parcelaRecord = await parcelasStore.get(Number(payload.parcela_id));
+          if (parcelaRecord) {
+            parcelaRecord.etiquetas = normalizeTagList(parcelaRecord.etiquetas, parcelaRecord.etiqueta_ids);
+            parcelaRecord.etiqueta_ids = extractTagIds(parcelaRecord.etiquetas);
+            await parcelasStore.put(parcelaRecord);
+          }
+        }
+        if (tagsStore && Array.isArray(payload.parcela_etiqueta_ids)) {
+          for (const tagId of payload.parcela_etiqueta_ids) {
+            const existingTag = await tagsStore.get(Number(tagId));
+            if (!existingTag && payload.parcela_etiquetas) {
+              const tagInfo = payload.parcela_etiquetas.find((tag) => Number(tag?.id) === Number(tagId));
+              if (tagInfo) {
+                await tagsStore.put({ id: Number(tagId), nombre: tagInfo.nombre != null ? String(tagInfo.nombre) : '' });
+              }
+            }
+          }
+        }
+        if (parajesStore && payload.parcela_paraje_id) {
+          const parajeId = Number(payload.parcela_paraje_id);
+          if (Number.isInteger(parajeId) && parajeId > 0) {
+            const existingParaje = await parajesStore.get(parajeId);
+            if (!existingParaje) {
+              await parajesStore.put({
+                id: parajeId,
+                nombre: payload.parcela_paraje_nombre != null ? String(payload.parcela_paraje_nombre) : '',
+              });
+            }
+          }
+        }
       }
     }
   }
@@ -410,6 +637,84 @@ export async function hasPendingOps() {
 export async function getLastSnapshotIso() {
   const meta = await loadMeta('lastSnapshot');
   return meta || null;
+}
+
+export async function listEtiquetas() {
+  const db = await getDb();
+  const rows = await db.transaction('tags').store.getAll();
+  return rows
+    .map((row) => ({
+      id: Number(row.id),
+      nombre: row.nombre != null ? String(row.nombre) : '',
+    }))
+    .sort((a, b) => a.nombre.localeCompare(b.nombre));
+}
+
+export async function upsertEtiquetaLocal(tag) {
+  const normalized = normalizeTag(tag);
+  if (!normalized) return;
+  const db = await getDb();
+  const tx = db.transaction('tags', 'readwrite');
+  await tx.store.put({ id: normalized.id, nombre: normalized.nombre || '' });
+  await tx.done;
+}
+
+export async function removeEtiquetaLocal(id) {
+  const num = Number(id);
+  if (!Number.isInteger(num)) return;
+  const db = await getDb();
+  const tx = db.transaction(['tags', 'parcelas', 'relations'], 'readwrite');
+  await tx.objectStore('tags').delete(num);
+  const parcelasStore = tx.objectStore('parcelas');
+  let parcelaCursor = await parcelasStore.openCursor();
+  while (parcelaCursor) {
+    const record = parcelaCursor.value;
+    if (Array.isArray(record.etiquetas) || Array.isArray(record.etiqueta_ids)) {
+      const filtered = normalizeTagList(record.etiquetas, record.etiqueta_ids).filter((tag) => tag.id !== num);
+      record.etiquetas = filtered;
+      record.etiqueta_ids = extractTagIds(filtered);
+      parcelaCursor.update(record);
+    }
+    parcelaCursor = await parcelaCursor.continue();
+  }
+  const relationsStore = tx.objectStore('relations');
+  let relCursor = await relationsStore.openCursor();
+  while (relCursor) {
+    const record = relCursor.value;
+    if (Array.isArray(record.parcela_etiquetas) || Array.isArray(record.parcela_etiqueta_ids)) {
+      const filtered = normalizeTagList(record.parcela_etiquetas, record.parcela_etiqueta_ids).filter((tag) => tag.id !== num);
+      record.parcela_etiquetas = filtered;
+      record.parcela_etiqueta_ids = extractTagIds(filtered);
+      relCursor.update(record);
+    }
+    relCursor = await relCursor.continue();
+  }
+  await tx.done;
+}
+
+export async function setParcelaEtiquetasLocal(parcelaId, tags) {
+  const pid = Number(parcelaId);
+  if (!Number.isInteger(pid)) return;
+  const db = await getDb();
+  const tx = db.transaction(['parcelas', 'relations'], 'readwrite');
+  const parcelasStore = tx.objectStore('parcelas');
+  const parcelaRecord = await parcelasStore.get(pid);
+  const normalizedTags = normalizeTagList(tags);
+  const tagIds = extractTagIds(normalizedTags);
+  if (parcelaRecord) {
+    parcelaRecord.etiquetas = normalizedTags;
+    parcelaRecord.etiqueta_ids = tagIds;
+    await parcelasStore.put(parcelaRecord);
+  }
+  const relationsStore = tx.objectStore('relations');
+  const index = relationsStore.index('byParcela');
+  const rels = await index.getAll(pid);
+  for (const rel of rels) {
+    rel.parcela_etiquetas = normalizedTags;
+    rel.parcela_etiqueta_ids = tagIds;
+    await relationsStore.put(rel);
+  }
+  await tx.done;
 }
 
 export async function replacePalotPlaceholder(codigo, serverPalot) {
@@ -428,16 +733,39 @@ export async function replacePalotPlaceholder(codigo, serverPalot) {
 
 export async function replaceRelationPlaceholder(parcelaId, palotCodigo, serverRelation) {
   const db = await getDb();
-  const tx = db.transaction('relations', 'readwrite');
-  const index = tx.store.index('byParcela');
+  const tx = db.transaction(['relations', 'parcelas', 'parajes'], 'readwrite');
+  const relationsStore = tx.objectStore('relations');
+  const parcelasStore = tx.objectStore('parcelas');
+  const parajesStore = tx.objectStore('parajes');
+  const index = relationsStore.index('byParcela');
   const matches = await index.getAll(Number(parcelaId));
   for (const rel of matches) {
     if (rel.source === 'local' && rel.palot_codigo === palotCodigo) {
-      await tx.store.delete(rel.key);
+      await relationsStore.delete(rel.key);
     }
   }
   if (serverRelation) {
-    await tx.store.put(makeRelationRecord({ ...serverRelation, source: 'server', pending: false }));
+    const record = makeRelationRecord({ ...serverRelation, source: 'server', pending: false });
+    await relationsStore.put(record);
+    if (parcelasStore && Number.isInteger(record.parcela_id)) {
+      const parcelaRecord = await parcelasStore.get(record.parcela_id);
+      if (parcelaRecord) {
+        parcelaRecord.etiquetas = record.parcela_etiquetas;
+        parcelaRecord.etiqueta_ids = record.parcela_etiqueta_ids;
+        parcelaRecord.paraje_id = record.parcela_paraje_id != null ? record.parcela_paraje_id : null;
+        parcelaRecord.paraje_nombre = record.parcela_paraje_nombre != null ? record.parcela_paraje_nombre : '';
+        await parcelasStore.put(parcelaRecord);
+        if (parajesStore && parcelaRecord.paraje_id != null && Number.isInteger(parcelaRecord.paraje_id) && parcelaRecord.paraje_id > 0) {
+          const existingParaje = await parajesStore.get(parcelaRecord.paraje_id);
+          if (!existingParaje) {
+            await parajesStore.put({
+              id: parcelaRecord.paraje_id,
+              nombre: parcelaRecord.paraje_nombre || '',
+            });
+          }
+        }
+      }
+    }
   }
   await tx.done;
 }

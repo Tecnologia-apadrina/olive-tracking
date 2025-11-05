@@ -4,6 +4,12 @@
 BEGIN;
 
 -- Tablas base (equivalentes a SCHEMA_SQL_BASE en backend/src/db.js)
+CREATE TABLE IF NOT EXISTS parajes (
+  id SERIAL PRIMARY KEY,
+  nombre TEXT NOT NULL,
+  UNIQUE(nombre)
+);
+
 CREATE TABLE IF NOT EXISTS parcelas (
   id SERIAL PRIMARY KEY,
   nombre TEXT,
@@ -15,7 +21,8 @@ CREATE TABLE IF NOT EXISTS parcelas (
   variedad TEXT,
   porcentaje NUMERIC,
   num_olivos INTEGER,
-  hectareas NUMERIC
+  hectareas NUMERIC,
+  paraje_id INTEGER REFERENCES parajes(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS olivos (
@@ -48,6 +55,17 @@ CREATE TABLE IF NOT EXISTS users (
   role TEXT DEFAULT 'campo'
 );
 
+CREATE TABLE IF NOT EXISTS etiquetas (
+  id SERIAL PRIMARY KEY,
+  nombre TEXT UNIQUE NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS parcelas_etiquetas (
+  id_parcela INTEGER REFERENCES parcelas(id) ON DELETE CASCADE,
+  id_etiqueta INTEGER REFERENCES etiquetas(id) ON DELETE CASCADE,
+  PRIMARY KEY (id_parcela, id_etiqueta)
+);
+
 -- Migraciones Postgres (equivalentes a SCHEMA_SQL_ALTER)
 ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS sigpac_municipio TEXT;
 ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS sigpac_poligono TEXT;
@@ -58,6 +76,13 @@ ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS nombre_interno TEXT;
 ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS porcentaje NUMERIC;
 ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS num_olivos INTEGER;
 ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS hectareas NUMERIC;
+CREATE TABLE IF NOT EXISTS parajes (
+  id SERIAL PRIMARY KEY,
+  nombre TEXT NOT NULL,
+  UNIQUE(nombre)
+);
+ALTER TABLE IF EXISTS parajes DROP COLUMN IF EXISTS propietario;
+ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS paraje_id INTEGER REFERENCES parajes(id) ON DELETE SET NULL;
 ALTER TABLE IF EXISTS parcelas DROP COLUMN IF EXISTS id_usuario;
 ALTER TABLE IF EXISTS parcelas_palots ADD COLUMN IF NOT EXISTS kgs NUMERIC;
 ALTER TABLE IF EXISTS parcelas_palots ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
@@ -65,6 +90,15 @@ ALTER TABLE IF EXISTS palots ADD COLUMN IF NOT EXISTS kgs NUMERIC;
 ALTER TABLE IF EXISTS palots ADD COLUMN IF NOT EXISTS procesado BOOLEAN DEFAULT false;
 ALTER TABLE IF EXISTS olivos DROP COLUMN IF EXISTS variedad;
 ALTER TABLE IF EXISTS olivos DROP COLUMN IF EXISTS id_usuario;
+CREATE TABLE IF NOT EXISTS etiquetas (
+  id SERIAL PRIMARY KEY,
+  nombre TEXT UNIQUE NOT NULL
+);
+CREATE TABLE IF NOT EXISTS parcelas_etiquetas (
+  id_parcela INTEGER REFERENCES parcelas(id) ON DELETE CASCADE,
+  id_etiqueta INTEGER REFERENCES etiquetas(id) ON DELETE CASCADE,
+  PRIMARY KEY (id_parcela, id_etiqueta)
+);
 
 -- Seed Admin user (password: Diagnoses5-Hazard3)
 -- Hash scrypt compatible con backend/src/utils/password.js

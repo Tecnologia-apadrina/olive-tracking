@@ -6,6 +6,12 @@ dotenv.config();
 
 // Base schema (compatible with pg-mem): only CREATE TABLE statements.
 const SCHEMA_SQL_BASE = `
+  CREATE TABLE IF NOT EXISTS parajes (
+    id SERIAL PRIMARY KEY,
+    nombre TEXT NOT NULL,
+    UNIQUE(nombre)
+  );
+
   CREATE TABLE IF NOT EXISTS parcelas (
     id SERIAL PRIMARY KEY,
     nombre TEXT,
@@ -17,7 +23,8 @@ const SCHEMA_SQL_BASE = `
     variedad TEXT,
     porcentaje NUMERIC,
     num_olivos INTEGER,
-    hectareas NUMERIC
+    hectareas NUMERIC,
+    paraje_id INTEGER REFERENCES parajes(id) ON DELETE SET NULL
   );
 
   CREATE TABLE IF NOT EXISTS olivos (
@@ -50,10 +57,27 @@ const SCHEMA_SQL_BASE = `
     password_hash TEXT NOT NULL,
     role TEXT DEFAULT 'campo'
   );
+
+  CREATE TABLE IF NOT EXISTS etiquetas (
+    id SERIAL PRIMARY KEY,
+    nombre TEXT UNIQUE NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS parcelas_etiquetas (
+    id_parcela INTEGER REFERENCES parcelas(id) ON DELETE CASCADE,
+    id_etiqueta INTEGER REFERENCES etiquetas(id) ON DELETE CASCADE,
+    PRIMARY KEY (id_parcela, id_etiqueta)
+  );
 `;
 
 // Postgres-only migrations to evolve existing DBs.
 const SCHEMA_SQL_ALTER = `
+  CREATE TABLE IF NOT EXISTS parajes (
+    id SERIAL PRIMARY KEY,
+    nombre TEXT NOT NULL,
+    UNIQUE(nombre)
+  );
+  ALTER TABLE IF EXISTS parajes DROP COLUMN IF EXISTS propietario;
   ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS sigpac_municipio TEXT;
   ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS sigpac_poligono TEXT;
   ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS sigpac_parcela TEXT;
@@ -63,6 +87,7 @@ const SCHEMA_SQL_ALTER = `
   ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS porcentaje NUMERIC;
   ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS num_olivos INTEGER;
   ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS hectareas NUMERIC;
+  ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS paraje_id INTEGER REFERENCES parajes(id) ON DELETE SET NULL;
   ALTER TABLE IF EXISTS parcelas DROP COLUMN IF EXISTS id_usuario;
   ALTER TABLE IF EXISTS parcelas_palots ADD COLUMN IF NOT EXISTS kgs NUMERIC;
   ALTER TABLE IF EXISTS parcelas_palots ADD COLUMN IF NOT EXISTS reservado_aderezo BOOLEAN DEFAULT false;
@@ -72,6 +97,15 @@ const SCHEMA_SQL_ALTER = `
   ALTER TABLE IF EXISTS palots ADD COLUMN IF NOT EXISTS procesado BOOLEAN DEFAULT false;
   ALTER TABLE IF EXISTS olivos DROP COLUMN IF EXISTS variedad;
   ALTER TABLE IF EXISTS olivos DROP COLUMN IF EXISTS id_usuario;
+  CREATE TABLE IF NOT EXISTS etiquetas (
+    id SERIAL PRIMARY KEY,
+    nombre TEXT UNIQUE NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS parcelas_etiquetas (
+    id_parcela INTEGER REFERENCES parcelas(id) ON DELETE CASCADE,
+    id_etiqueta INTEGER REFERENCES etiquetas(id) ON DELETE CASCADE,
+    PRIMARY KEY (id_parcela, id_etiqueta)
+  );
 `;
 
 const forceMem = (process.env.USE_MEM || '').toLowerCase() === '1' || (process.env.USE_MEM || '').toLowerCase() === 'true';

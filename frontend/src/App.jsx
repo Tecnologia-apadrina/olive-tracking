@@ -14,12 +14,27 @@ import {
   getParcelaById,
   getPendingOps,
   getLastSnapshotIso,
+  listEtiquetas,
+  upsertEtiquetaLocal,
+  removeEtiquetaLocal,
+  setParcelaEtiquetasLocal,
 } from './offline/db';
 import { syncAll, syncDown, syncUp } from './offline/sync';
 
 const DEFAULT_CEDENTE_KGS = 300;
 const toStringSafe = (value) => String(value === undefined || value === null ? '' : value);
 const coalesce = (value, fallback) => (value === undefined || value === null ? fallback : value);
+const toTagIds = (list) => {
+  if (!Array.isArray(list)) return [];
+  const ids = [];
+  for (const entry of list) {
+    const id = Number(entry && entry.id != null ? entry.id : entry);
+    if (Number.isInteger(id) && id > 0 && !ids.includes(id)) {
+      ids.push(id);
+    }
+  }
+  return ids;
+};
 
 const normalizeRole = (role) => {
   if (!role) return '';
@@ -73,6 +88,14 @@ function App() {
   const [offlineReady, setOfflineReady] = useState(false);
   const [syncMessage, setSyncMessage] = useState('');
   const [syncing, setSyncing] = useState(false);
+  const [availableTags, setAvailableTags] = useState([]);
+  const [parcelaTagDrafts, setParcelaTagDrafts] = useState({});
+  const [tagSaveStatus, setTagSaveStatus] = useState({});
+  const [selectedTagIds, setSelectedTagIds] = useState([]);
+  const [tagCreateName, setTagCreateName] = useState('');
+  const [tagCreateStatus, setTagCreateStatus] = useState('idle');
+  const [tagCreateError, setTagCreateError] = useState('');
+  const [tagDeleteStatus, setTagDeleteStatus] = useState({});
   const syncingRef = useRef(false);
   const syncTimeoutRef = useRef(null);
   const relationsRefreshCounter = useRef(0);
@@ -108,7 +131,11 @@ function App() {
         const last = await getLastSnapshotIso();
         if (!cancelled && last) setLastSync(last);
         const pending = await getPendingOps().catch(() => []);
-        if (!cancelled) setPendingCount(pending.length);
+        const tagsList = await listEtiquetas().catch(() => []);
+        if (!cancelled) {
+          setPendingCount(pending.length);
+          setAvailableTags(Array.isArray(tagsList) ? tagsList : []);
+        }
       } catch (_) {}
       if (cancelled) return;
       const initialPath = (typeof window !== 'undefined' && window.location && window.location.pathname) ? window.location.pathname : '/';
@@ -199,6 +226,19 @@ function App() {
     }
   }, [authRole, showOwnPalotsOnly]);
 
+  useEffect(() => {
+    if (parcelaId == null) {
+      setSelectedTagIds([]);
+      return;
+    }
+    const draft = parcelaTagDrafts[parcelaId];
+    if (Array.isArray(draft)) {
+      setSelectedTagIds(draft);
+    } else {
+      setSelectedTagIds([]);
+    }
+  }, [parcelaId, parcelaTagDrafts]);
+
   const performLogin = async (u, p) => {
     try {
       setLoginError('');
@@ -269,10 +309,14 @@ function App() {
         return 'olivos';
       case '/parcelas':
         return 'parcelas';
+      case '/parajes':
+        return 'parajes';
       case '/palots':
         return 'palots';
       case '/metrics':
         return (authRoleRef.current === 'admin' || authRoleRef.current === 'metricas') ? 'metrics' : 'main';
+      case '/etiquetas':
+        return authRoleRef.current === 'admin' ? 'etiquetas' : 'main';
       default:
         return 'main';
     }
@@ -339,6 +383,21 @@ function App() {
         setParcelaNombre(parcelaData.nombre || '');
         setParcelaId(parcelaData && parcelaData.id !== undefined ? parcelaData.id : null);
         setParcelaPct(parcelaData && parcelaData.porcentaje !== undefined ? parcelaData.porcentaje : null);
+        if (parcelaData && parcelaData.id != null) {
+          let initialTagIds = toTagIds(parcelaData.etiquetas || parcelaData.etiqueta_ids);
+          if (initialTagIds.length === 0) {
+            try {
+              const stored = await getParcelaById(parcelaData.id);
+              if (stored) {
+                initialTagIds = toTagIds(stored.etiquetas || stored.etiqueta_ids);
+              }
+            } catch (_) {}
+          }
+          setParcelaTagDrafts((prev) => ({
+            ...prev,
+            [parcelaData.id]: initialTagIds,
+          }));
+        }
         setPalotKgs('');
         setParcelaNotas('');
         setStatus('success');
@@ -376,9 +435,10 @@ function App() {
   const refreshAllData = async () => {
     beginRelationsRefresh();
     try {
-      const [relations, pending] = await Promise.all([
+      const [relations, pending, tagsList] = await Promise.all([
         listRelations().catch(() => []),
         getPendingOps().catch(() => []),
+        listEtiquetas().catch(() => []),
       ]);
       const rows = Array.isArray(relations) ? relations : [];
       setAllRels(rows);
@@ -390,11 +450,31 @@ function App() {
         if (!kgMap.has(key)) kgMap.set(key, r.kgs == null ? '' : String(r.kgs));
         if (!noteMap.has(key)) noteMap.set(key, r.notas == null ? '' : String(r.notas));
       }
+      const parcelTagMap = new Map();
+      for (const r of rows) {
+        if (r.parcela_id == null) continue;
+        const parcelId = Number(r.parcela_id);
+        if (!Number.isInteger(parcelId)) continue;
+        if (parcelTagMap.has(parcelId)) continue;
+        parcelTagMap.set(parcelId, toTagIds(r.parcela_etiquetas || r.parcela_etiqueta_ids));
+      }
       setKgsDraft(Object.fromEntries(kgMap));
       setNotesDraft(Object.fromEntries(noteMap));
       setKgSaveStatus({});
       setNoteSaveStatus({});
       setAderezoSaveStatus({});
+      if (parcelTagMap.size > 0) {
+        setParcelaTagDrafts((prev) => {
+          const next = { ...prev };
+          for (const [pid, tagIds] of parcelTagMap.entries()) {
+            next[pid] = tagIds;
+          }
+          return next;
+        });
+      }
+      if (Array.isArray(tagsList)) {
+        setAvailableTags(tagsList);
+      }
       setPendingCount(Array.isArray(pending) ? pending.length : 0);
       return rows;
     } finally {
@@ -564,6 +644,28 @@ function App() {
     });
   };
 
+  const reloadTags = async () => {
+    const tags = await listEtiquetas().catch(() => []);
+    setAvailableTags(Array.isArray(tags) ? tags : []);
+  };
+
+  const handleToggleParcelaTag = (tagId) => {
+    const numeric = Number(tagId);
+    if (!Number.isInteger(numeric)) return;
+    setSelectedTagIds((prev) => {
+      const exists = prev.includes(numeric);
+      const next = exists ? prev.filter((id) => id !== numeric) : [...prev, numeric];
+      const sorted = next.slice().sort((a, b) => a - b);
+      if (parcelaId != null) {
+        setParcelaTagDrafts((current) => ({
+          ...current,
+          [parcelaId]: sorted,
+        }));
+      }
+      return sorted;
+    });
+  };
+
   const persistPalotCodes = async ({
     codes,
     normalizedKgs,
@@ -571,6 +673,8 @@ function App() {
     successMessage,
     offlineMessage,
     resetMode = 'full',
+    tagIds = [],
+    tagDetails = [],
   }) => {
     const uniqueCodes = Array.from(new Set((codes || []).map((raw) => String(raw).trim()).filter(Boolean)));
     if (uniqueCodes.length === 0) {
@@ -671,7 +775,14 @@ function App() {
           created_at: new Date().toISOString(),
           created_by: authUser || '',
           created_by_username: authUser || '',
+          parcela_etiqueta_ids: tagIds,
+          parcela_etiquetas: tagDetails,
+          parcela_paraje_id: parcelaInfoSafe.paraje_id != null ? parcelaInfoSafe.paraje_id : null,
+          parcela_paraje_nombre: parcelaInfoSafe.paraje_nombre || '',
         });
+      }
+      if (parcelaId) {
+        await setParcelaEtiquetasLocal(parcelaId, tagDetails);
       }
       await refreshAllData();
       await loadRelPalots(parcelaId);
@@ -702,6 +813,7 @@ function App() {
         palotMap.set(String(item.codigo).trim(), item);
       }
 
+      let serverTagDetails = null;
       for (const palotCode of uniqueCodes) {
         let palotRow = palotMap.get(palotCode);
         if (!palotRow) {
@@ -728,6 +840,7 @@ function App() {
             kgs: normalizedKgs,
             reservado_aderezo: false,
             notas: hasNotes ? rawNotes : null,
+            etiquetas: tagIds,
           })
         });
         if (relRes.status === 401) {
@@ -740,7 +853,22 @@ function App() {
           const baseMsg = errBody.error || 'No se pudo guardar la relación';
           throw new Error(`${baseMsg} (palot ${palotCode})`);
         }
+        const relData = await relRes.json().catch(() => null);
+        if (relData && Array.isArray(relData.parcela_etiquetas) && relData.parcela_etiquetas.length > 0) {
+          serverTagDetails = relData.parcela_etiquetas;
+        }
         processedCodes.push(palotCode);
+      }
+      if (parcelaId) {
+        const tagsForStore = serverTagDetails && serverTagDetails.length > 0 ? serverTagDetails : tagDetails;
+        if (tagsForStore) {
+          await setParcelaEtiquetasLocal(parcelaId, tagsForStore);
+          const idsFromResponse = toTagIds(tagsForStore);
+          setParcelaTagDrafts((prev) => ({
+            ...prev,
+            [parcelaId]: idsFromResponse,
+          }));
+        }
       }
 
       setSaveStatus('ok');
@@ -822,6 +950,11 @@ function App() {
       return;
     }
     const normalizedKgs = parsedKgs.value;
+    const tagIds = Array.from(new Set((selectedTagIds || []).map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0))).sort((a, b) => a - b);
+    const tagDetails = tagIds.map((id) => {
+      const match = (availableTags || []).find((tag) => Number(tag.id) === id);
+      return { id, nombre: match && match.nombre ? match.nombre : '' };
+    });
 
     await persistPalotCodes({
       codes: palotCodes,
@@ -830,6 +963,8 @@ function App() {
       successMessage: palotCodes.length > 1 ? `Relaciones guardadas para ${palotCodes.length} palots.` : 'Relación guardada correctamente.',
       offlineMessage: 'Guardado sin conexión. Se sincronizará al recuperar la red.',
       resetMode: 'full',
+      tagIds,
+      tagDetails,
     });
   };
 
@@ -1038,11 +1173,12 @@ function App() {
   const canExport = authRole === 'admin' || authRole === 'molino';
 
   const exportCsv = (mode) => {
-    // Columnas: codigo_palot, id_parcela, nombre_parcela, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, parcela_variedad, parcela_porcentaje, kgs, fecha_creacion, creado_por, notas
+    // Columnas: codigo_palot, id_parcela, nombre_parcela, paraje, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, parcela_variedad, parcela_porcentaje, kgs, fecha_creacion, creado_por, etiquetas, notas
     const header = [
       'codigo_palot',
       'id_parcela',
       'nombre_parcela',
+      'paraje',
       'sigpac_municipio',
       'sigpac_poligono',
       'sigpac_parcela',
@@ -1054,6 +1190,7 @@ function App() {
       'kgs',
       'fecha_creacion',
       'creado_por',
+      'etiquetas',
       'notas'
     ];
     const escape = (v) => '"' + toStringSafe(v).replaceAll('"', '""') + '"';
@@ -1062,6 +1199,7 @@ function App() {
       r.palot_codigo,
       r.parcela_id,
       r.parcela_nombre || '',
+      r.parcela_paraje_nombre || '',
       r.sigpac_municipio || '',
       r.sigpac_poligono || '',
       r.sigpac_parcela || '',
@@ -1073,6 +1211,17 @@ function App() {
       r.kgs != null ? r.kgs : '',
       r.created_at ? new Date(r.created_at).toISOString() : '',
       r.created_by_username || r.created_by || '',
+      Array.isArray(r.parcela_etiquetas)
+        ? r.parcela_etiquetas
+            .map((tag) => {
+              if (!tag) return '';
+              if (tag.nombre && tag.nombre.trim()) return tag.nombre.trim();
+              if (tag.id != null) return `Etiqueta ${tag.id}`;
+              return '';
+            })
+            .filter((name) => name && name.trim())
+            .join('; ')
+        : '',
       toStringSafe(r.notas).replace(/\r?\n/g, ' ').trim()
     ]);
     const csv = [header.join(','), ...rows.map(r => r.map(escape).join(','))].join('\n');
@@ -1166,6 +1315,133 @@ function App() {
       setTimeout(() => setNoteSaveStatus((s) => ({ ...s, [relKey]: 'idle' })), 1200);
     } catch (err) {
       setNoteSaveStatus((s) => ({ ...s, [relKey]: 'error' }));
+    }
+  };
+
+  const handleSaveParcelTags = async (relation, draftIds) => {
+    if (!relation) return;
+    const relationId = Number(relation.id);
+    const parcelId = Number(relation.parcela_id);
+    if (!Number.isFinite(relationId) || !Number.isInteger(parcelId)) return;
+    const sanitized = Array.from(new Set((draftIds || []).map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0))).sort((a, b) => a - b);
+    if (!isOnline) {
+      setTagSaveStatus((s) => ({ ...s, [parcelId]: 'error' }));
+      return;
+    }
+    setTagSaveStatus((s) => ({ ...s, [parcelId]: 'saving' }));
+    try {
+      const res = await fetch(`${apiBase}/parcelas-palots/${relationId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ etiquetas: sanitized })
+      });
+      if (!res.ok) throw new Error('No se pudo guardar');
+      const data = await res.json().catch(() => null);
+      const tagList = data && Array.isArray(data.parcela_etiquetas)
+        ? data.parcela_etiquetas
+        : sanitized.map((id) => {
+            const match = (availableTags || []).find((tag) => Number(tag.id) === id);
+            return { id, nombre: match ? match.nombre : '' };
+          });
+      await setParcelaEtiquetasLocal(parcelId, tagList);
+      const normalizedIds = toTagIds(tagList.length ? tagList : sanitized);
+      setParcelaTagDrafts((prev) => ({ ...prev, [parcelId]: normalizedIds }));
+      if (parcelaId === parcelId) {
+        setSelectedTagIds(normalizedIds);
+      }
+      const updater = (rows = []) => rows.map((row) => (Number(row.parcela_id) === parcelId
+        ? { ...row, parcela_etiquetas: tagList, parcela_etiqueta_ids: normalizedIds }
+        : row));
+      setAllRels(updater);
+      setRelPalots(updater);
+      setTagSaveStatus((s) => ({ ...s, [parcelId]: 'ok' }));
+      setTimeout(() => {
+        setTagSaveStatus((s) => ({ ...s, [parcelId]: 'idle' }));
+      }, 1200);
+    } catch (error) {
+      setTagSaveStatus((s) => ({ ...s, [parcelId]: 'error' }));
+    }
+  };
+
+  const handleCreateTag = async (event) => {
+    if (event && typeof event.preventDefault === 'function') event.preventDefault();
+    const trimmed = tagCreateName.trim();
+    if (!trimmed) {
+      setTagCreateError('Introduce un nombre');
+      return;
+    }
+    if (!isOnline) {
+      setTagCreateError('Sin conexión');
+      setTagCreateStatus('error');
+      return;
+    }
+    setTagCreateStatus('saving');
+    setTagCreateError('');
+    try {
+      const res = await fetch(`${apiBase}/etiquetas`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ nombre: trimmed })
+      });
+      if (res.status === 401) throw new Error('No autenticado');
+      if (res.status === 409) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error || 'Etiqueta duplicada');
+      }
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error || 'No se pudo crear');
+      }
+      const data = await res.json().catch(() => null);
+      if (data) {
+        await upsertEtiquetaLocal(data);
+      }
+      await reloadTags();
+      setTagCreateName('');
+      setTagCreateStatus('ok');
+      setTimeout(() => setTagCreateStatus('idle'), 1200);
+    } catch (error) {
+      setTagCreateStatus('error');
+      setTagCreateError(error && error.message ? error.message : 'Error al crear etiqueta');
+    }
+  };
+
+  const handleDeleteTag = async (tag) => {
+    if (!tag || tag.id == null) return;
+    const tagId = Number(tag.id);
+    if (!Number.isInteger(tagId)) return;
+    if (!isOnline) {
+      setTagDeleteStatus((s) => ({ ...s, [tagId]: 'error' }));
+      return;
+    }
+    if (typeof window !== 'undefined' && !window.confirm(`¿Eliminar etiqueta "${tag.nombre || tagId}"?`)) {
+      return;
+    }
+    setTagDeleteStatus((s) => ({ ...s, [tagId]: 'saving' }));
+    try {
+      const res = await fetch(`${apiBase}/etiquetas/${tagId}`, {
+        method: 'DELETE',
+        headers: { ...authHeaders },
+      });
+      if (res.status === 401) throw new Error('No autenticado');
+      if (!res.ok && res.status !== 204) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error || 'No se pudo eliminar');
+      }
+      await removeEtiquetaLocal(tagId);
+      await reloadTags();
+      setParcelaTagDrafts((prev) => {
+        const next = { ...prev };
+        Object.keys(next).forEach((key) => {
+          const pid = Number(key);
+          next[pid] = Array.isArray(next[pid]) ? next[pid].filter((id) => id !== tagId) : [];
+        });
+        return next;
+      });
+      setTagDeleteStatus((s) => ({ ...s, [tagId]: 'ok' }));
+      setTimeout(() => setTagDeleteStatus((s) => ({ ...s, [tagId]: 'idle' })), 1200);
+    } catch (error) {
+      setTagDeleteStatus((s) => ({ ...s, [tagId]: 'error' }));
     }
   };
 
@@ -1279,6 +1555,13 @@ function App() {
               const noteDraftValue = toStringSafe(coalesce(notesDraft[relKey], r.notas == null ? '' : String(r.notas)));
               const noteStatus = noteSaveStatus[relKey];
               const canEditNotes = !r.pending && !Number.isNaN(Number(r?.id));
+              const parcelId = Number(r.parcela_id);
+              const baseTagDraft = Array.isArray(parcelaTagDrafts[parcelId])
+                ? parcelaTagDrafts[parcelId]
+                : toTagIds(r.parcela_etiquetas || r.parcela_etiqueta_ids);
+              const normalizedTagDraft = Array.from(new Set(baseTagDraft)).sort((a, b) => a - b);
+              const tagStatus = coalesce(tagSaveStatus[parcelId], 'idle');
+              const canEditTags = !r.pending && Number.isFinite(Number(r?.id));
               return (
                 <div
                   key={r.id || relKey}
@@ -1331,6 +1614,63 @@ function App() {
                     {noteStatus === 'ok' && <span className="state ok">OK</span>}
                     {noteStatus === 'error' && <span className="state error">Error</span>}
                     {!canEditNotes && !r.pending && <span className="muted">Sin id de servidor</span>}
+                  </div>
+                  <div className="tag-editor" style={{ gridColumn: '1 / -1' }}>
+                    <label className="kg-label">Etiquetas</label>
+                    {availableTags.length === 0 ? (
+                      <span className="muted">Sin etiquetas disponibles.</span>
+                    ) : (
+                      <div className="tag-pill-group">
+                        {availableTags.map((tag) => {
+                          const tagId = Number(tag.id);
+                          const selected = normalizedTagDraft.includes(tagId);
+                          return (
+                            <button
+                              key={`${relKey}-tag-${tagId}`}
+                              type="button"
+                              className={`pill tag-pill ${selected ? 'tag-pill-selected' : ''}`}
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                if (!canEditTags || tagStatus === 'saving') return;
+                                setParcelaTagDrafts((prev) => {
+                                  const current = Array.isArray(prev[parcelId]) ? prev[parcelId] : normalizedTagDraft;
+                                  const exists = current.includes(tagId);
+                                  const next = exists ? current.filter((id) => id !== tagId) : [...current, tagId];
+                                  return {
+                                    ...prev,
+                                    [parcelId]: Array.from(new Set(next)).sort((a, b) => a - b),
+                                  };
+                                });
+                              }}
+                              disabled={!canEditTags || tagStatus === 'saving'}
+                              aria-pressed={selected}
+                            >
+                              {tag.nombre || `Etiqueta ${tagId}`}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {availableTags.length > 0 && (
+                      <div style={{ marginTop: '0.4rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            const payloadIds = Array.isArray(parcelaTagDrafts[parcelId]) ? parcelaTagDrafts[parcelId] : normalizedTagDraft;
+                            handleSaveParcelTags(r, payloadIds);
+                          }}
+                          disabled={!canEditTags || tagStatus === 'saving' || !isOnline}
+                        >
+                          {tagStatus === 'saving' ? 'Guardando…' : 'Guardar etiquetas'}
+                        </button>
+                        {tagStatus === 'ok' && <span className="state ok">OK</span>}
+                        {tagStatus === 'error' && <span className="state error">Error</span>}
+                        {!isOnline && <span className="muted">Sin conexión</span>}
+                      </div>
+                    )}
                   </div>
                   <span className="kv-label">Parcela</span><span className="kv-value">{r.parcela_nombre || '-'}</span>
                   <span className="kv-label">Creado por</span><span className="kv-value">{r.created_by_username || r.created_by || '-'}</span>
@@ -1435,7 +1775,13 @@ function App() {
                 <a className={`btn ${view === 'parcelas' ? '' : 'btn-outline'}`} href="/parcelas" onClick={(e) => { e.preventDefault(); navigate('/parcelas'); setMenuOpen(false); }}>Parcelas</a>
               )}
               {authRole === 'admin' && (
+                <a className={`btn ${view === 'parajes' ? '' : 'btn-outline'}`} href="/parajes" onClick={(e) => { e.preventDefault(); navigate('/parajes'); setMenuOpen(false); }}>Parajes</a>
+              )}
+              {authRole === 'admin' && (
                 <a className={`btn ${view === 'palots' ? '' : 'btn-outline'}`} href="/palots" onClick={(e) => { e.preventDefault(); navigate('/palots'); setMenuOpen(false); }}>Palots</a>
+              )}
+              {authRole === 'admin' && (
+                <a className={`btn ${view === 'etiquetas' ? '' : 'btn-outline'}`} href="/etiquetas" onClick={(e) => { e.preventDefault(); navigate('/etiquetas'); setMenuOpen(false); }}>Etiquetas</a>
               )}
               {(authRole === 'admin' || authRole === 'metricas') && (
                 <a className={`btn ${view === 'metrics' ? '' : 'btn-outline'}`} href="/metrics" onClick={(e) => { e.preventDefault(); navigate('/metrics'); setMenuOpen(false); }}>Métricas</a>
@@ -1573,6 +1919,34 @@ function App() {
             disabled={saveStatus === 'saving'}
           />
         </div>
+        <div className="row">
+          <label>Etiquetas</label>
+          {availableTags.length === 0 ? (
+            <span className="muted">Sin etiquetas disponibles. Gestiona etiquetas desde el menú.</span>
+          ) : (
+            <div className="tag-selector tag-pill-group">
+              {availableTags.map((tag) => {
+                const tagId = Number(tag.id);
+                const selected = selectedTagIds.includes(tagId);
+                return (
+                  <button
+                    key={tag.id}
+                    type="button"
+                    className={`pill tag-pill ${selected ? 'tag-pill-selected' : ''}`}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      handleToggleParcelaTag(tagId);
+                    }}
+                    disabled={saveStatus === 'saving'}
+                    aria-pressed={selected}
+                  >
+                    {tag.nombre || `Etiqueta ${tag.id}`}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
 
         <div className="controls">
           <button className="btn" onClick={handleSave} disabled={!canSave}>
@@ -1687,8 +2061,82 @@ function App() {
         <ParcelasView apiBase={apiBase} authHeaders={authHeaders} />
       )}
 
+      {authToken && authRole === 'admin' && view === 'parajes' && (
+        <ParajesView apiBase={apiBase} authHeaders={authHeaders} />
+      )}
+
       {authToken && view === 'palots' && (
         <PalotsView apiBase={apiBase} authHeaders={authHeaders} />
+      )}
+
+      {authToken && authRole === 'admin' && view === 'etiquetas' && (
+        <div className="card etiquetas-card" style={{ maxWidth: '640px' }}>
+          <h1>Etiquetas</h1>
+          <span className="muted">Gestiona las etiquetas disponibles para asignar a las parcelas.</span>
+          <form onSubmit={handleCreateTag} style={{ marginTop: '1rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+            <label htmlFor="new-tag-name">Nombre de la nueva etiqueta</label>
+            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+              <input
+                id="new-tag-name"
+                value={tagCreateName}
+                onChange={(e) => {
+                  setTagCreateName(e.target.value);
+                  if (tagCreateStatus === 'error') setTagCreateStatus('idle');
+                  if (tagCreateError) setTagCreateError('');
+                }}
+                placeholder="Ej. Arbequina"
+                style={{ flex: '1 1 240px' }}
+                disabled={tagCreateStatus === 'saving'}
+              />
+              <button type="submit" className="btn" disabled={tagCreateStatus === 'saving' || !isOnline}>
+                {tagCreateStatus === 'saving' ? 'Creando…' : 'Añadir etiqueta'}
+              </button>
+            </div>
+            {tagCreateStatus === 'ok' && <span className="state ok">Etiqueta creada.</span>}
+            {tagCreateStatus === 'error' && tagCreateError && <span className="state error">{tagCreateError}</span>}
+            {!isOnline && <span className="muted">Conéctate para crear o modificar etiquetas.</span>}
+          </form>
+          <div className="divider" />
+          <h2 style={{ marginBottom: '0.5rem' }}>Listado</h2>
+          {availableTags.length === 0 ? (
+            <span className="muted">Todavía no hay etiquetas disponibles.</span>
+          ) : (
+            <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+              {availableTags.map((tag) => {
+                const tagId = Number(tag.id);
+                const status = coalesce(tagDeleteStatus[tagId], 'idle');
+                return (
+                  <li
+                    key={tagId}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: '0.5rem',
+                      border: '1px solid #e5e7eb',
+                      borderRadius: '6px',
+                      padding: '0.5rem 0.75rem',
+                    }}
+                  >
+                    <span>{tag.nombre || `Etiqueta ${tagId}`}</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <button
+                        type="button"
+                        className="btn btn-outline btn-sm"
+                        onClick={() => handleDeleteTag(tag)}
+                        disabled={status === 'saving' || !isOnline}
+                      >
+                        {status === 'saving' ? 'Eliminando…' : 'Eliminar'}
+                      </button>
+                      {status === 'ok' && <span className="state ok">OK</span>}
+                      {status === 'error' && <span className="state error">Error</span>}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
       )}
 
       {authToken && (authRole === 'admin' || authRole === 'metricas') && view === 'metrics' && (
@@ -1714,13 +2162,18 @@ function MetricsView({ apiBase, authHeaders }) {
   const [estimateExtraPercent, setEstimateExtraPercent] = React.useState(10);
   const [estimateExtraDraft, setEstimateExtraDraft] = React.useState('10');
   const [estimateExtraError, setEstimateExtraError] = React.useState('');
+  const [excludedParcelaIds, setExcludedParcelaIds] = React.useState([]);
+  const [parcelOptions, setParcelOptions] = React.useState([]);
+  const [parcelSearch, setParcelSearch] = React.useState('');
   const isOlivoMode = estimateMode === 'olivos';
 
   const load = React.useCallback(async () => {
     setStatus('loading');
     setError('');
+    const excludeList = excludedParcelaIds.filter((id) => Number.isInteger(id) && id > 0);
+    const query = excludeList.length ? `?exclude=${excludeList.join(',')}` : '';
     try {
-      const res = await fetch(`${apiBase}/metrics/harvest`, { headers: { ...authHeaders } });
+      const res = await fetch(`${apiBase}/metrics/harvest${query}`, { headers: { ...authHeaders } });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(data.error || 'No se pudieron cargar las métricas');
@@ -1772,12 +2225,54 @@ function MetricsView({ apiBase, authHeaders }) {
       setPerParcelaRows(perParcelaNormalized);
       setTotalParcelas(Number(data.totalParcelas) || 0);
       setTotalOlivos(Number(data.totalOlivos) || 0);
+
+      const parcelOptionsFromApi = Array.isArray(data.parcelOptions) ? data.parcelOptions : [];
+      if (parcelOptionsFromApi.length) {
+        const normalizedOptions = [];
+        const seen = new Set();
+        for (const option of parcelOptionsFromApi) {
+          const id = Number(option.id);
+          if (!Number.isInteger(id) || id <= 0 || seen.has(id)) continue;
+          seen.add(id);
+          normalizedOptions.push({
+            id,
+            nombre: option.nombre || '',
+          });
+        }
+        normalizedOptions.sort((a, b) => {
+          const nameCmp = String(a.nombre || '').localeCompare(String(b.nombre || ''), 'es', { sensitivity: 'base' });
+          if (nameCmp !== 0) return nameCmp;
+          return a.id - b.id;
+        });
+        setParcelOptions(normalizedOptions);
+      } else if (perParcelaNormalized.length) {
+        setParcelOptions((prev) => {
+          const map = new Map();
+          for (const option of prev || []) {
+            if (option && Number.isInteger(option.id)) {
+              map.set(option.id, { id: option.id, nombre: option.nombre || '' });
+            }
+          }
+          for (const row of perParcelaNormalized) {
+            const id = Number(row.parcela_id);
+            if (!Number.isInteger(id) || id <= 0 || map.has(id)) continue;
+            map.set(id, { id, nombre: row.nombre || '' });
+          }
+          const merged = Array.from(map.values()).sort((a, b) => {
+            const nameCmp = String(a.nombre || '').localeCompare(String(b.nombre || ''), 'es', { sensitivity: 'base' });
+            if (nameCmp !== 0) return nameCmp;
+            return a.id - b.id;
+          });
+          return merged;
+        });
+      }
+
       setStatus('ready');
     } catch (err) {
       setError(err.message || 'No se pudieron cargar las métricas');
       setStatus('error');
     }
-  }, [apiBase, authHeaders]);
+  }, [apiBase, authHeaders, excludedParcelaIds]);
 
   React.useEffect(() => {
     load();
@@ -1955,6 +2450,50 @@ function MetricsView({ apiBase, authHeaders }) {
     return base.sort(compare);
   }, [perParcelaRows, perParcelaSort]);
 
+  const filteredParcelOptions = React.useMemo(() => {
+    const base = Array.isArray(parcelOptions) ? parcelOptions : [];
+    const searchValue = parcelSearch.trim().toLowerCase();
+    const selectedSet = new Set(excludedParcelaIds);
+    const matches = [];
+    for (const option of base) {
+      if (!option || !Number.isInteger(option.id)) continue;
+      const name = String(option.nombre || '');
+      const normalizedName = name.toLowerCase();
+      const idString = String(option.id);
+      const matchesSearch = searchValue === ''
+        || normalizedName.includes(searchValue)
+        || idString.includes(searchValue);
+      if (matchesSearch || selectedSet.has(option.id)) {
+        matches.push({ id: option.id, nombre: name });
+      }
+    }
+    matches.sort((a, b) => {
+      const aSelected = selectedSet.has(a.id);
+      const bSelected = selectedSet.has(b.id);
+      if (aSelected !== bSelected) return aSelected ? -1 : 1;
+      const nameCmp = String(a.nombre || '').localeCompare(String(b.nombre || ''), 'es', { sensitivity: 'base' });
+      if (nameCmp !== 0) return nameCmp;
+      return a.id - b.id;
+    });
+    return matches;
+  }, [parcelOptions, parcelSearch, excludedParcelaIds]);
+
+  const toggleExcludedParcela = React.useCallback((parcelaId) => {
+    const numeric = Number(parcelaId);
+    if (!Number.isInteger(numeric) || numeric <= 0) return;
+    setExcludedParcelaIds((prev) => {
+      if (prev.includes(numeric)) {
+        return prev.filter((id) => id !== numeric);
+      }
+      const next = [...prev, numeric].sort((a, b) => a - b);
+      return next;
+    });
+  }, [setExcludedParcelaIds]);
+
+  const clearExcludedParcelas = React.useCallback(() => {
+    setExcludedParcelaIds((prev) => (prev.length ? [] : prev));
+  }, [setExcludedParcelaIds]);
+
   const parcelasRestantes = Math.max(Number(totalParcelas || 0) - Number(resumenTotales.parcelas || 0), 0);
   const safeProgress = Number.isFinite(harvestProgressPct) ? Math.min(Math.max(harvestProgressPct, 0), 100) : 0;
   const harvestProgressDisplay = totalOlivos > 0 ? formatNumber(safeProgress, 1) : '-';
@@ -1990,6 +2529,67 @@ function MetricsView({ apiBase, authHeaders }) {
       {status === 'loading' && !error && (
         <div className="row">
           <span className="state muted">Cargando métricas…</span>
+        </div>
+      )}
+      {status !== 'idle' && (
+        <div className="metrics-filters">
+          <div className="metrics-filter-header">
+            <div className="metrics-filter-search">
+              <label htmlFor="metrics-exclude-search">Excluir parcelas de las métricas</label>
+              <input
+                id="metrics-exclude-search"
+                type="text"
+                value={parcelSearch}
+                onChange={(event) => setParcelSearch(event.target.value)}
+                placeholder="Busca por nombre o id de parcela"
+              />
+            </div>
+            <div className="metrics-filter-actions">
+              {excludedParcelaIds.length > 0 && (
+                <>
+                  <span className="pill pill-info metrics-excluded-pill">
+                    Excluyendo {excludedParcelaIds.length} {excludedParcelaIds.length === 1 ? 'parcela' : 'parcelas'}
+                  </span>
+                  <button
+                    type="button"
+                    className="btn btn-outline btn-sm"
+                    onClick={clearExcludedParcelas}
+                  >
+                    Quitar exclusiones
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+          {status === 'loading' && parcelOptions.length === 0 ? (
+            <div className="metrics-exclude-empty muted">Cargando listado de parcelas…</div>
+          ) : status === 'error' && parcelOptions.length === 0 ? (
+            <div className="metrics-exclude-empty muted">No se pudieron cargar las parcelas.</div>
+          ) : filteredParcelOptions.length > 0 ? (
+            <div className="tag-pill-group metrics-exclude-list">
+              {filteredParcelOptions.map((option) => {
+                const isSelected = excludedParcelaIds.includes(option.id);
+                const label = option.nombre ? option.nombre : `Parcela #${option.id}`;
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    className={`pill tag-pill ${isSelected ? 'tag-pill-selected' : ''}`}
+                    onClick={() => toggleExcludedParcela(option.id)}
+                    aria-pressed={isSelected}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="metrics-exclude-empty muted">
+              {parcelOptions.length === 0
+                ? 'No se encontraron parcelas registradas.'
+                : 'No hay parcelas que coincidan con la búsqueda.'}
+            </div>
+          )}
         </div>
       )}
       {status === 'ready' && (
@@ -2755,6 +3355,7 @@ function ParcelasView({ apiBase, authHeaders }) {
   const [pctDrafts, setPctDrafts] = React.useState({});
   const [pctStatus, setPctStatus] = React.useState({});
   const [pctMessage, setPctMessage] = React.useState({});
+  const [groupByParaje, setGroupByParaje] = React.useState(false);
   const load = async () => {
     setStatus('loading');
     try {
@@ -2768,6 +3369,7 @@ function ParcelasView({ apiBase, authHeaders }) {
       setPctDrafts(drafts);
       setPctStatus({});
       setPctMessage({});
+      setGroupByParaje(false);
       setStatus('ready');
     } catch (e) {
       setStatus('error');
@@ -2852,6 +3454,68 @@ function ParcelasView({ apiBase, authHeaders }) {
       setPctMessage(prev => ({ ...prev, [row.id]: e.message || 'Error' }));
     }
   };
+
+  const groupedParcelas = React.useMemo(() => {
+    const groups = new Map();
+    for (const row of rows) {
+      const key = row.paraje_id != null ? row.paraje_id : 'sin-paraje';
+      const nombre = row.paraje_nombre ? String(row.paraje_nombre) : 'Sin paraje definido';
+      if (!groups.has(key)) {
+        groups.set(key, { key, nombre, items: [] });
+      }
+      groups.get(key).items.push(row);
+    }
+    const sorted = Array.from(groups.values()).sort((a, b) => {
+      if (a.key === 'sin-paraje') return 1;
+      if (b.key === 'sin-paraje') return -1;
+      const cmp = String(a.nombre || '').localeCompare(String(b.nombre || ''), 'es', { sensitivity: 'base' });
+      if (cmp !== 0) return cmp;
+      return String(a.key).localeCompare(String(b.key));
+    });
+    for (const group of sorted) {
+      group.items.sort((a, b) => Number(a.id || 0) - Number(b.id || 0));
+    }
+    return sorted;
+  }, [rows]);
+
+  const renderParcelaRow = (p) => {
+    const pctState = pctStatus[p.id];
+    const message = pctMessage[p.id] || '';
+    return (
+      <div key={p.id} className="list-row" style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '0.5rem' }}>
+        <div className="name">#{p.id} · {p.nombre || '(sin nombre)'}</div>
+        <div>
+          <div className="muted" style={{ marginBottom: '0.35rem' }}>
+            {p.paraje_nombre ? (
+              <><strong>Paraje:</strong> {p.paraje_nombre} · </>
+            ) : (
+              <><strong>Paraje:</strong> sin asignar · </>
+            )}
+            interno: {p.nombre_interno || '-'} · olivos: {coalesce(p.num_olivos, '-')} · hectáreas: {coalesce(p.hectareas, '-')} · porcentaje actual: {coalesce(p.porcentaje, '-')} · variedad: {p.variedad || '-'} · SIGPAC {p.sigpac_municipio || '-'}/{p.sigpac_poligono || '-'}/{p.sigpac_parcela || '-'}/{p.sigpac_recinto || '-'}
+          </div>
+          <div className="controls" style={{ marginTop: '0.35rem', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center' }}>
+            <span>Nuevo porcentaje:</span>
+            <input
+              type="number"
+              step="0.01"
+              style={{ width: '6rem' }}
+              value={pctDrafts[p.id] ?? ''}
+              onChange={(e) => handlePctChange(p.id, e.target.value)}
+            />
+            <button
+              className="btn btn-outline"
+              onClick={() => savePorcentaje(p)}
+              disabled={pctState === 'saving' || !hasPctChanged(p)}
+            >
+              {pctState === 'saving' ? 'Guardando…' : 'Guardar'}
+            </button>
+            {pctState === 'ok' && <span className="state ok">{message || 'Guardado'}</span>}
+            {pctState === 'error' && <span className="state error">{message || 'Error'}</span>}
+          </div>
+        </div>
+      </div>
+    );
+  };
   return (
     <div className="card grid">
       <div className="controls" style={{ justifyContent: 'space-between' }}>
@@ -2897,38 +3561,300 @@ function ParcelasView({ apiBase, authHeaders }) {
         {status === 'loading' && <span className="muted">Cargando…</span>}
         {status === 'error' && <span className="state error">No autorizado o error</span>}
         {status === 'ready' && rows.length === 0 && <span className="muted">Sin datos</span>}
-        <div className="list">
-          {rows.map(p => (
-            <div key={p.id} className="list-row" style={{ display: 'grid', gridTemplateColumns: '1fr 2fr' }}>
-              <div className="name">#{p.id} · {p.nombre || '(sin nombre)'}</div>
-              <div>
-                <div className="muted">
-                  interno: {p.nombre_interno || '-'} · olivos: {coalesce(p.num_olivos, '-')} · hectáreas: {coalesce(p.hectareas, '-')} · porcentaje actual: {coalesce(p.porcentaje, '-')} · variedad: {p.variedad || '-'} ·
-                  SIGPAC {p.sigpac_municipio || '-'}/{p.sigpac_poligono || '-'}/{p.sigpac_parcela || '-'}/{p.sigpac_recinto || '-'}
-                </div>
-                <div className="controls" style={{ marginTop: '0.5rem', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center' }}>
-                  <span>Nuevo porcentaje:</span>
-                  <input
-                    type="number"
-                    step="0.01"
-                    style={{ width: '6rem' }}
-                    value={pctDrafts[p.id] ?? ''}
-                    onChange={(e) => handlePctChange(p.id, e.target.value)}
-                  />
-                  <button
-                    className="btn btn-outline"
-                    onClick={() => savePorcentaje(p)}
-                    disabled={pctStatus[p.id] === 'saving' || !hasPctChanged(p)}
-                  >
-                    {pctStatus[p.id] === 'saving' ? 'Guardando…' : 'Guardar'}
-                  </button>
-                  {pctStatus[p.id] === 'ok' && <span className="state ok">{pctMessage[p.id] || 'Guardado'}</span>}
-                  {pctStatus[p.id] === 'error' && <span className="state error">{pctMessage[p.id] || 'Error'}</span>}
-                </div>
-              </div>
+        {status === 'ready' && rows.length > 0 && (
+          <>
+            <div className="controls" style={{ marginBottom: '0.5rem' }}>
+              <button
+                type="button"
+                className={`btn btn-outline`}
+                onClick={() => setGroupByParaje((prev) => !prev)}
+              >
+                {groupByParaje ? 'Ver listado' : 'Agrupar por paraje'}
+              </button>
             </div>
-          ))}
+            <div className="list" style={{ gap: '0.75rem' }}>
+              {groupByParaje
+                ? groupedParcelas.map((group) => (
+                    <div key={group.key} className="paraje-group">
+                      <div className="paraje-group-header">
+                        <h3 className="paraje-group-title">
+                          {group.nombre}
+                          <span className="muted" style={{ marginLeft: '0.5rem', fontSize: '0.85rem' }}>
+                            ({group.items.length} parcela{group.items.length === 1 ? '' : 's'})
+                          </span>
+                        </h3>
+                      </div>
+                      <div className="paraje-group-list">
+                        {group.items.map((item) => renderParcelaRow(item))}
+                      </div>
+                    </div>
+                  ))
+                : rows.map((item) => renderParcelaRow(item))}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ParajesView({ apiBase, authHeaders }) {
+  const [rows, setRows] = React.useState([]);
+  const [status, setStatus] = React.useState('idle');
+  const [createName, setCreateName] = React.useState('');
+  const [createStatus, setCreateStatus] = React.useState('idle');
+  const [createError, setCreateError] = React.useState('');
+  const [editDrafts, setEditDrafts] = React.useState({});
+  const [editStatus, setEditStatus] = React.useState({});
+  const [autoStatus, setAutoStatus] = React.useState('idle');
+  const [autoMessage, setAutoMessage] = React.useState('');
+
+  const load = React.useCallback(async () => {
+    setStatus('loading');
+    try {
+      const res = await fetch(`${apiBase}/parajes`, { headers: { ...authHeaders } });
+      if (!res.ok) throw new Error('No autorizado');
+      const data = await res.json().catch(() => []);
+      const list = (Array.isArray(data) ? data : []).map((item) => ({
+        ...item,
+        parcelas_count: Number(item?.parcelas_count ?? 0),
+      }));
+      setRows(list);
+      const nextDrafts = {};
+      for (const item of list) {
+        nextDrafts[item.id] = {
+          nombre: toStringSafe(item.nombre),
+        };
+      }
+      setEditDrafts(nextDrafts);
+      setEditStatus({});
+      setStatus('ready');
+    } catch (error) {
+      setStatus('error');
+    }
+  }, [apiBase, authHeaders]);
+
+  React.useEffect(() => {
+    load();
+  }, [load]);
+
+  const handleCreate = async () => {
+    const nombre = createName.trim();
+    if (!nombre) {
+      setCreateStatus('error');
+      setCreateError('Introduce un nombre');
+      return;
+    }
+    setCreateStatus('saving');
+    setCreateError('');
+    try {
+      const res = await fetch(`${apiBase}/parajes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ nombre }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'No se pudo crear');
+      }
+      setCreateName('');
+      setCreateStatus('ok');
+      setTimeout(() => setCreateStatus('idle'), 1200);
+      load();
+    } catch (error) {
+      setCreateStatus('error');
+      setCreateError(error && error.message ? error.message : 'Error al crear');
+    }
+  };
+
+  const handleUpdate = async (paraje) => {
+    const id = paraje.id;
+    if (!Number.isInteger(id)) return;
+    const drafts = editDrafts[id] || { nombre: '' };
+    const nombre = drafts.nombre != null ? String(drafts.nombre).trim() : '';
+    if (!nombre) {
+      setEditStatus((prev) => ({ ...prev, [id]: 'error' }));
+      return;
+    }
+    setEditStatus((prev) => ({ ...prev, [id]: 'saving' }));
+    try {
+      const res = await fetch(`${apiBase}/parajes/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ nombre }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'No se pudo actualizar');
+      }
+      setRows((prev) => prev.map((row) => (row.id === id ? data : row)));
+      setEditDrafts((prev) => ({
+        ...prev,
+        [id]: {
+          nombre: toStringSafe(data.nombre),
+        },
+      }));
+      setEditStatus((prev) => ({ ...prev, [id]: 'ok' }));
+      setTimeout(() => setEditStatus((prev) => ({ ...prev, [id]: 'idle' })), 1200);
+    } catch (error) {
+      setEditStatus((prev) => ({ ...prev, [id]: 'error' }));
+    }
+  };
+
+  const handleDelete = async (paraje) => {
+    if (!window.confirm(`¿Eliminar el paraje "${paraje.nombre}"? Las parcelas quedarán sin paraje asignado.`)) {
+      return;
+    }
+    const id = paraje.id;
+    setEditStatus((prev) => ({ ...prev, [id]: 'saving' }));
+    try {
+      const res = await fetch(`${apiBase}/parajes/${id}`, {
+        method: 'DELETE',
+        headers: { ...authHeaders },
+      });
+      if (res.status !== 204) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'No se pudo eliminar');
+      }
+      setRows((prev) => prev.filter((row) => row.id !== id));
+      setEditDrafts((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      setEditStatus((prev) => ({ ...prev, [id]: 'ok' }));
+      setTimeout(() => setEditStatus((prev) => ({ ...prev, [id]: 'idle' })), 1200);
+    } catch (error) {
+      setEditStatus((prev) => ({ ...prev, [id]: 'error' }));
+    }
+  };
+
+  const handleAutoAssign = async () => {
+    if (autoStatus === 'saving') return;
+    setAutoStatus('saving');
+    setAutoMessage('');
+    try {
+      const res = await fetch(`${apiBase}/parajes/auto-assign`, {
+        method: 'POST',
+        headers: { ...authHeaders },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'No se pudo asignar');
+      }
+      const count = data.assigned != null ? Number(data.assigned) : 0;
+      const totalParajes = data.parajesRegistrados != null ? Number(data.parajesRegistrados) : null;
+      const summary = totalParajes != null
+        ? `Asignadas ${count} parcelas a sus parajes. Total parajes: ${totalParajes}.`
+        : `Asignadas ${count} parcelas a sus parajes.`;
+      setAutoMessage(summary);
+      setAutoStatus('ok');
+      load();
+      setTimeout(() => setAutoStatus('idle'), 1600);
+    } catch (error) {
+      setAutoStatus('error');
+      setAutoMessage(error && error.message ? error.message : 'Error al asignar');
+    }
+  };
+
+  return (
+    <div className="card grid">
+      <div className="controls" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.75rem' }}>
+        <div>
+          <h1>Parajes</h1>
+          <span className="muted">Agrupa las parcelas por paraje y gestiona su nomenclatura.</span>
         </div>
+        <div className="controls" style={{ flexWrap: 'wrap', gap: '0.5rem' }}>
+          <button className="btn btn-outline" onClick={load} disabled={status === 'loading'}>
+            {status === 'loading' ? 'Actualizando…' : 'Recargar'}
+          </button>
+          <button className="btn btn-outline" onClick={handleAutoAssign} disabled={autoStatus === 'saving' || status === 'loading'}>
+            {autoStatus === 'saving' ? 'Asignando…' : 'Detectar por nombre'}
+          </button>
+        </div>
+      </div>
+      {autoMessage && (
+        <span className={`state ${autoStatus === 'error' ? 'error' : 'ok'}`}>{autoMessage}</span>
+      )}
+      <div className="row">
+        <label htmlFor="new-paraje-name">Nuevo paraje</label>
+        <div className="controls" style={{ flexWrap: 'wrap', gap: '0.5rem' }}>
+          <input
+            id="new-paraje-name"
+            placeholder="Nombre del paraje"
+            value={createName}
+            onChange={(e) => {
+              setCreateName(e.target.value);
+              if (createStatus === 'error') setCreateStatus('idle');
+              if (createError) setCreateError('');
+            }}
+            style={{ flex: '1 1 220px', minWidth: '200px' }}
+          />
+          <button
+            className="btn"
+            onClick={handleCreate}
+            disabled={createStatus === 'saving'}
+          >
+            {createStatus === 'saving' ? 'Creando…' : 'Añadir'}
+          </button>
+          {createStatus === 'ok' && <span className="state ok">Creado</span>}
+          {createStatus === 'error' && <span className="state error">{createError || 'Error'}</span>}
+        </div>
+      </div>
+      <div className="row">
+        {status === 'loading' && <span className="muted">Cargando…</span>}
+        {status === 'error' && <span className="state error">No se pudieron cargar los parajes</span>}
+        {status === 'ready' && rows.length === 0 && <span className="muted">Sin parajes registrados todavía.</span>}
+        {status === 'ready' && rows.length > 0 && (
+          <div className="list" style={{ gap: '0.75rem' }}>
+            {rows.map((row) => {
+              const drafts = editDrafts[row.id] || { nombre: '' };
+              const state = editStatus[row.id] || 'idle';
+              const busy = state === 'saving';
+              return (
+                <div key={row.id} className="list-row" style={{ display: 'grid', gap: '0.75rem' }}>
+                  <div>
+                    <span className="name">#{row.id}</span>
+                    <span className="muted" style={{ marginLeft: '0.5rem' }}>
+                      {row.parcelas_count != null ? `${row.parcelas_count} parcela${Number(row.parcelas_count) === 1 ? '' : 's'}` : ''}
+                    </span>
+                  </div>
+                  <div className="controls" style={{ flexWrap: 'wrap', gap: '0.5rem' }}>
+                    <input
+                      value={drafts.nombre}
+                      onChange={(e) => setEditDrafts((prev) => ({
+                        ...prev,
+                        [row.id]: {
+                          ...(prev[row.id] || { nombre: '' }),
+                          nombre: e.target.value,
+                        },
+                      }))}
+                      style={{ flex: '1 1 200px', minWidth: '180px' }}
+                    />
+                    <div className="controls" style={{ gap: '0.5rem', flexWrap: 'wrap' }}>
+                      <button
+                        className="btn btn-outline"
+                        onClick={() => handleUpdate(row)}
+                        disabled={busy}
+                      >
+                        {busy ? 'Guardando…' : 'Guardar'}
+                      </button>
+                      <button
+                        className="btn btn-outline"
+                        onClick={() => handleDelete(row)}
+                        disabled={busy}
+                      >
+                        Eliminar
+                      </button>
+                      {state === 'ok' && <span className="state ok">OK</span>}
+                      {state === 'error' && <span className="state error">Error</span>}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

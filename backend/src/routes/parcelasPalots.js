@@ -2,6 +2,102 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 
+const normalizeEtiquetaIds = (value) => {
+  if (!value) return [];
+  const arr = Array.isArray(value) ? value : [value];
+  const normalized = [];
+  for (const item of arr) {
+    const num = Number(item);
+    if (Number.isInteger(num) && num > 0 && !normalized.includes(num)) {
+      normalized.push(num);
+    }
+  }
+  return normalized;
+};
+
+const fetchParcelTags = async (parcelaId) => {
+  if (!Number.isInteger(parcelaId)) return [];
+  try {
+    const rows = await db.public.many(
+      `SELECT e.id, e.nombre
+         FROM parcelas_etiquetas pe
+         JOIN etiquetas e ON e.id = pe.id_etiqueta
+        WHERE pe.id_parcela = $1
+        ORDER BY e.nombre ASC`,
+      [parcelaId]
+    );
+    return rows;
+  } catch (_) {
+    return [];
+  }
+};
+
+const setParcelTags = async (parcelaId, etiquetaIds) => {
+  if (!Number.isInteger(parcelaId)) return [];
+  const ids = normalizeEtiquetaIds(etiquetaIds);
+  if (!ids.length) {
+    await db.public.none('DELETE FROM parcelas_etiquetas WHERE id_parcela = $1', [parcelaId]);
+    return [];
+  }
+  const existing = await db.public.many(
+    'SELECT id FROM etiquetas WHERE id = ANY($1::int[])',
+    [ids]
+  );
+  const validIds = existing.map((row) => Number(row.id)).filter((id) => Number.isInteger(id));
+  await db.public.none('DELETE FROM parcelas_etiquetas WHERE id_parcela = $1', [parcelaId]);
+  if (validIds.length) {
+    const values = validIds.map((_, idx) => `($1, $${idx + 2})`);
+    await db.public.none(
+      `INSERT INTO parcelas_etiquetas(id_parcela, id_etiqueta)
+       VALUES ${values.join(', ')}
+       ON CONFLICT DO NOTHING`,
+      [parcelaId, ...validIds]
+    );
+  }
+  return fetchParcelTags(parcelaId);
+};
+
+const fetchRelationWithDetails = async (relationId) => {
+  return db.public.one(
+    `SELECT pp.id,
+            par.id   AS parcela_id,
+            par.nombre AS parcela_nombre,
+            par.sigpac_municipio,
+            par.sigpac_poligono,
+            par.sigpac_parcela,
+            par.sigpac_recinto,
+            par.variedad   AS parcela_variedad,
+            par.porcentaje AS parcela_porcentaje,
+            par.num_olivos AS parcela_num_olivos,
+            par.hectareas  AS parcela_hectareas,
+            par.nombre_interno AS parcela_nombre_interno,
+            par.paraje_id AS parcela_paraje_id,
+            pj.nombre AS parcela_paraje_nombre,
+            p.id     AS palot_id,
+            p.codigo AS palot_codigo,
+            p.procesado AS palot_procesado,
+            pp.kgs   AS kgs,
+            pp.reservado_aderezo AS reservado_aderezo,
+            pp.notas AS notas,
+            pp.id_usuario AS created_by,
+            u.username AS created_by_username,
+            pp.created_at AS created_at,
+            COALESCE((
+              SELECT json_agg(json_build_object('id', e.id, 'nombre', e.nombre) ORDER BY e.nombre)
+                FROM parcelas_etiquetas pe
+                JOIN etiquetas e ON e.id = pe.id_etiqueta
+               WHERE pe.id_parcela = par.id
+            ), '[]'::json) AS parcela_etiquetas
+       FROM parcelas_palots pp
+       JOIN parcelas par ON par.id = pp.id_parcela
+       LEFT JOIN parajes pj ON pj.id = par.paraje_id
+       JOIN palots   p   ON p.id = pp.id_palot
+       LEFT JOIN users  u ON u.id = pp.id_usuario
+      WHERE pp.id = $1`,
+    [relationId]
+  );
+};
+
 const parseRequiredNumber = (value, field = 'valor') => {
   if (value === undefined || value === null) {
     return { error: `${field} requerido` };
@@ -33,7 +129,7 @@ const toBool = (value) => {
 router.post('/parcelas/:parcelaId/palots', async (req, res) => {
   if (!req.userId) return res.status(401).json({ error: 'No autenticado' });
   const { parcelaId } = req.params;
-  const { palot_id, kgs, reservado_aderezo, notas } = req.body;
+  const { palot_id, kgs, reservado_aderezo, notas, etiquetas } = req.body || {};
   if (!palot_id) {
     return res.status(400).json({ error: 'palot_id requerido' });
   }
@@ -47,7 +143,25 @@ router.post('/parcelas/:parcelaId/palots', async (req, res) => {
     'INSERT INTO parcelas_palots(id_parcela, id_palot, id_usuario, kgs, reservado_aderezo, notas) VALUES($1, $2, $3, $4, $5, $6) RETURNING *',
     [parcelaId, palot_id, userId, parsedKgs.value, reservadoValue, notas ?? null]
   );
-  res.status(201).json(result);
+  let tags = [];
+  if (etiquetas !== undefined) {
+    try {
+      tags = await setParcelTags(Number(parcelaId), etiquetas);
+    } catch (_) {
+      // Silently ignore tag assignment errors but continue
+      tags = [];
+    }
+  }
+  let enriched;
+  try {
+    enriched = await fetchRelationWithDetails(result.id);
+  } catch (_) {
+    enriched = { ...result, parcela_etiquetas: tags };
+  }
+  res.status(201).json({
+    ...enriched,
+    parcela_etiquetas: enriched.parcela_etiquetas != null ? enriched.parcela_etiquetas : tags,
+  });
 });
 
 // List palots for a parcela
@@ -90,7 +204,11 @@ router.get('/parcelas-palots', async (req, res) => {
               par.sigpac_recinto,
               par.variedad   AS parcela_variedad,
               par.porcentaje AS parcela_porcentaje,
+              par.num_olivos AS parcela_num_olivos,
+              par.hectareas AS parcela_hectareas,
               par.nombre_interno AS parcela_nombre_interno,
+              par.paraje_id AS parcela_paraje_id,
+              pj.nombre AS parcela_paraje_nombre,
               p.id     AS palot_id,
               p.codigo AS palot_codigo,
               p.procesado AS palot_procesado,
@@ -99,9 +217,16 @@ router.get('/parcelas-palots', async (req, res) => {
               pp.notas AS notas,
               pp.id_usuario AS created_by,
               u.username AS created_by_username,
-              pp.created_at AS created_at
+              pp.created_at AS created_at,
+              COALESCE((
+                SELECT json_agg(json_build_object('id', e.id, 'nombre', e.nombre) ORDER BY e.nombre)
+                  FROM parcelas_etiquetas pe
+                  JOIN etiquetas e ON e.id = pe.id_etiqueta
+                 WHERE pe.id_parcela = par.id
+              ), '[]'::json) AS parcela_etiquetas
          FROM parcelas_palots pp
          JOIN parcelas par ON par.id = pp.id_parcela
+         LEFT JOIN parajes pj ON pj.id = par.paraje_id
          JOIN palots   p   ON p.id = pp.id_palot
          LEFT JOIN users  u ON u.id = pp.id_usuario
         ORDER BY pp.created_at DESC NULLS LAST, pp.id DESC`
@@ -116,7 +241,7 @@ router.get('/parcelas-palots', async (req, res) => {
 router.patch('/parcelas-palots/:id', async (req, res) => {
   if (!req.userId) return res.status(401).json({ error: 'No autenticado' });
   const { id } = req.params;
-  const { kgs, reservado_aderezo, notas } = req.body || {};
+  const { kgs, reservado_aderezo, notas, etiquetas } = req.body || {};
 
   const fields = [];
   const params = [];
@@ -141,18 +266,36 @@ router.patch('/parcelas-palots/:id', async (req, res) => {
     params.push(notas === null ? null : String(notas));
   }
 
-  if (!fields.length) {
+  const etiquetasProvided = etiquetas !== undefined;
+
+  if (!fields.length && !etiquetasProvided) {
     return res.status(400).json({ error: 'Sin cambios' });
   }
 
-  params.push(id);
-
   try {
-    const updated = await db.public.one(
-      `UPDATE parcelas_palots SET ${fields.join(', ')} WHERE id = $${idx} RETURNING *`,
-      params
-    );
-    res.json(updated);
+    let updated;
+    if (fields.length) {
+      params.push(id);
+      await db.public.one(
+        `UPDATE parcelas_palots SET ${fields.join(', ')} WHERE id = $${idx} RETURNING id`,
+        params
+      );
+    }
+    updated = await fetchRelationWithDetails(id);
+    let tags = [];
+    if (etiquetasProvided) {
+      try {
+        tags = await setParcelTags(Number(updated.id_parcela), etiquetas);
+      } catch (_) {
+        tags = await fetchParcelTags(Number(updated.id_parcela));
+      }
+    } else {
+      tags = await fetchParcelTags(Number(updated.id_parcela));
+    }
+    res.json({
+      ...updated,
+      parcela_etiquetas: tags,
+    });
   } catch (e) {
     res.status(404).json({ error: 'Relación no encontrada' });
   }

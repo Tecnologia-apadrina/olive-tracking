@@ -49,27 +49,48 @@ router.post('/parcelas', async (req, res) => {
   if (hectareasParsed.error) {
     return res.status(400).json({ error: hectareasParsed.error });
   }
+  const parajeIdRaw = req.body?.paraje_id;
+  if (parajeIdRaw !== undefined && parajeIdRaw !== null && parajeIdRaw !== '') {
+    const parsed = Number(parajeIdRaw);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      return res.status(400).json({ error: 'paraje_id inválido' });
+    }
+  }
+  const parajeId = parajeIdRaw === undefined || parajeIdRaw === null || parajeIdRaw === '' ? null : Number(parajeIdRaw);
   if (!nombre) {
     return res.status(400).json({ error: 'nombre requerido' });
   }
   // Insert without id_usuario (deprecated)
-  const row = await db.public.one(
-    'INSERT INTO parcelas(nombre, nombre_interno, porcentaje, num_olivos, hectareas) VALUES($1, $2, $3, $4, $5) RETURNING *',
+  const inserted = await db.public.one(
+    'INSERT INTO parcelas(nombre, nombre_interno, porcentaje, num_olivos, hectareas, paraje_id) VALUES($1, $2, $3, $4, $5, $6) RETURNING *',
     [
       nombre,
       nombre_interno ?? null,
       pctParsed.provided ? pctParsed.value : null,
       numOlivosParsed.provided ? numOlivosParsed.value : null,
       hectareasParsed.provided ? hectareasParsed.value : null,
+      parajeId,
     ]
   );
-  res.status(201).json(row);
+  const enriched = await db.public.one(
+    `SELECT par.*, pj.nombre AS paraje_nombre
+       FROM parcelas par
+       LEFT JOIN parajes pj ON pj.id = par.paraje_id
+      WHERE par.id = $1`,
+    [inserted.id]
+  );
+  res.status(201).json(enriched);
 });
 
 // List parcelas (admin only)
 router.get('/parcelas', requireAuth, requireAdmin, async (_req, res) => {
   try {
-    const rows = await db.public.many('SELECT * FROM parcelas ORDER BY id');
+    const rows = await db.public.many(
+      `SELECT par.*, pj.nombre AS paraje_nombre
+         FROM parcelas par
+         LEFT JOIN parajes pj ON pj.id = par.paraje_id
+        ORDER BY par.id`
+    );
     res.json(rows);
   } catch (e) {
     res.json([]);
@@ -110,15 +131,36 @@ router.patch('/parcelas/:id', requireAuth, requireAdmin, async (req, res) => {
     updates.push(`hectareas = $${params.length + 1}`);
     params.push(hectareasParsed.value);
   }
+  if (body.paraje_id !== undefined) {
+    const rawParaje = body.paraje_id;
+    if (rawParaje === null || rawParaje === '') {
+      updates.push(`paraje_id = $${params.length + 1}`);
+      params.push(null);
+    } else {
+      const parsedParaje = Number(rawParaje);
+      if (!Number.isInteger(parsedParaje) || parsedParaje <= 0) {
+        return res.status(400).json({ error: 'paraje_id inválido' });
+      }
+      updates.push(`paraje_id = $${params.length + 1}`);
+      params.push(parsedParaje);
+    }
+  }
   if (updates.length === 0) {
     return res.status(400).json({ error: 'Sin cambios' });
   }
   try {
-    const row = await db.public.one(
-      `UPDATE parcelas SET ${updates.join(', ')} WHERE id = $1 RETURNING *`,
+    await db.public.one(
+      `UPDATE parcelas SET ${updates.join(', ')} WHERE id = $1 RETURNING id`,
       params
     );
-    res.json(row);
+    const updated = await db.public.one(
+      `SELECT par.*, pj.nombre AS paraje_nombre
+         FROM parcelas par
+         LEFT JOIN parajes pj ON pj.id = par.paraje_id
+        WHERE par.id = $1`,
+      [numericId]
+    );
+    res.json(updated);
   } catch (e) {
     res.status(404).json({ error: 'Parcela no encontrada' });
   }

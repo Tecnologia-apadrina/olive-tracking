@@ -1,3 +1,7 @@
+process.env.USE_MEM = '1';
+process.env.ADMIN_USER = process.env.ADMIN_USER || '1';
+process.env.ADMIN_PASS = process.env.ADMIN_PASS || 'pwd';
+
 const request = require('supertest');
 const app = require('../src/app');
 
