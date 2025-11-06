@@ -2190,7 +2190,7 @@ function MetricsView({ apiBase, authHeaders }) {
   const [estimateExtraError, setEstimateExtraError] = React.useState('');
   const [excludedParcelaIds, setExcludedParcelaIds] = React.useState([]);
   const [excludedParajeIds, setExcludedParajeIds] = React.useState([]);
-  const [selectedMunicipios, setSelectedMunicipios] = React.useState([]);
+  const [excludedMunicipios, setExcludedMunicipios] = React.useState([]);
   const [parcelOptions, setParcelOptions] = React.useState([]);
   const [parajeOptions, setParajeOptions] = React.useState([]);
   const [municipioOptions, setMunicipioOptions] = React.useState([]);
@@ -2204,13 +2204,13 @@ function MetricsView({ apiBase, authHeaders }) {
     setError('');
     const excludeList = excludedParcelaIds.filter((id) => Number.isInteger(id) && id > 0);
     const excludeParajeList = excludedParajeIds.filter((id) => Number.isInteger(id) && id > 0);
-    const municipioList = selectedMunicipios
+    const municipioList = excludedMunicipios
       .map((code) => String(code).trim())
       .filter((code) => code.length > 0);
     const queryParams = new URLSearchParams();
     if (excludeList.length) queryParams.set('exclude', excludeList.join(','));
     if (excludeParajeList.length) queryParams.set('excludeParajes', excludeParajeList.join(','));
-    if (municipioList.length) queryParams.set('municipios', municipioList.join(','));
+    if (municipioList.length) queryParams.set('excludeMunicipios', municipioList.join(','));
     const query = queryParams.toString() ? `?${queryParams.toString()}` : '';
     try {
       const res = await fetch(`${apiBase}/metrics/harvest${query}`, { headers: { ...authHeaders } });
@@ -2346,7 +2346,7 @@ function MetricsView({ apiBase, authHeaders }) {
       setError(err.message || 'No se pudieron cargar las métricas');
       setStatus('error');
     }
-  }, [apiBase, authHeaders, excludedParcelaIds, excludedParajeIds, selectedMunicipios]);
+  }, [apiBase, authHeaders, excludedParcelaIds, excludedParajeIds, excludedMunicipios]);
 
   React.useEffect(() => {
     load();
@@ -2583,7 +2583,7 @@ function MetricsView({ apiBase, authHeaders }) {
   const filteredMunicipioOptions = React.useMemo(() => {
     const base = Array.isArray(municipioOptions) ? municipioOptions : [];
     const searchValue = municipioSearch.trim().toLowerCase();
-    const selectedSet = new Set(selectedMunicipios.map((code) => String(code)));
+    const selectedSet = new Set(excludedMunicipios.map((code) => String(code)));
     const matches = [];
     for (const option of base) {
       if (!option || !option.code) continue;
@@ -2606,7 +2606,7 @@ function MetricsView({ apiBase, authHeaders }) {
       return String(a.code || '').localeCompare(String(b.code || ''));
     });
     return matches;
-  }, [municipioOptions, municipioSearch, selectedMunicipios]);
+  }, [municipioOptions, municipioSearch, excludedMunicipios]);
 
   const toggleExcludedParcela = React.useCallback((parcelaId) => {
     const numeric = Number(parcelaId);
@@ -2643,7 +2643,7 @@ function MetricsView({ apiBase, authHeaders }) {
   const toggleMunicipioSelection = React.useCallback((code) => {
     const normalized = String(code ?? '').trim();
     if (!normalized) return;
-    setSelectedMunicipios((prev) => {
+    setExcludedMunicipios((prev) => {
       if (prev.includes(normalized)) {
         return prev.filter((item) => item !== normalized);
       }
@@ -2652,7 +2652,7 @@ function MetricsView({ apiBase, authHeaders }) {
   }, []);
 
   const clearSelectedMunicipios = React.useCallback(() => {
-    setSelectedMunicipios((prev) => (prev.length ? [] : prev));
+    setExcludedMunicipios((prev) => (prev.length ? [] : prev));
   }, []);
 
   const parcelasRestantes = Math.max(Number(totalParcelas || 0) - Number(resumenTotales.parcelas || 0), 0);
@@ -2815,7 +2815,7 @@ function MetricsView({ apiBase, authHeaders }) {
           <div className="metrics-filter-section">
             <div className="metrics-filter-header">
               <div className="metrics-filter-search">
-                <label htmlFor="metrics-municipio-search">Filtrar por municipio</label>
+                <label htmlFor="metrics-municipio-search">Excluir por municipio</label>
                 <input
                   id="metrics-municipio-search"
                   type="text"
@@ -2825,10 +2825,10 @@ function MetricsView({ apiBase, authHeaders }) {
                 />
               </div>
               <div className="metrics-filter-actions">
-                {selectedMunicipios.length > 0 && (
+                {excludedMunicipios.length > 0 && (
                   <>
                     <span className="pill pill-info metrics-excluded-pill">
-                      Filtrando {selectedMunicipios.length} {selectedMunicipios.length === 1 ? 'municipio' : 'municipios'}
+                      Excluyendo {excludedMunicipios.length} {excludedMunicipios.length === 1 ? 'municipio' : 'municipios'}
                     </span>
                     <button
                       type="button"
@@ -2848,7 +2848,7 @@ function MetricsView({ apiBase, authHeaders }) {
             ) : filteredMunicipioOptions.length > 0 ? (
               <div className="tag-pill-group metrics-exclude-list">
                 {filteredMunicipioOptions.map((option) => {
-                  const isSelected = selectedMunicipios.includes(option.code);
+                  const isSelected = excludedMunicipios.includes(option.code);
                   const label = option.nombre ? `${option.nombre} (${option.code})` : `Municipio ${option.code}`;
                   return (
                     <button

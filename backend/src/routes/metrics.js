@@ -60,7 +60,12 @@ router.get('/metrics/harvest', requireAuth, requireAdminOrMetrics, async (req, r
   try {
     const excludeIds = parseExcludeIds(req.query.exclude);
     const excludeParajeIds = parseExcludeIds(req.query.excludeParajes || req.query.exclude_parajes);
-    const includeMunicipios = parseMunicipioCodes(req.query.municipios || req.query.municipio);
+    const excludeMunicipios = parseMunicipioCodes(
+      req.query.excludeMunicipios
+      || req.query.exclude_municipios
+      || req.query.municipios
+      || req.query.municipio
+    );
 
     const buildFilterClause = (alias) => {
       const clauses = [];
@@ -73,9 +78,9 @@ router.get('/metrics/harvest', requireAuth, requireAdminOrMetrics, async (req, r
         params.push(excludeParajeIds);
         clauses.push(`(${alias}.paraje_id IS NULL OR NOT (${alias}.paraje_id = ANY($${params.length}::int[])))`);
       }
-      if (includeMunicipios.length) {
-        params.push(includeMunicipios);
-        clauses.push(`${alias}.sigpac_municipio = ANY($${params.length}::text[])`);
+      if (excludeMunicipios.length) {
+        params.push(excludeMunicipios);
+        clauses.push(`(${alias}.sigpac_municipio IS NULL OR NOT (${alias}.sigpac_municipio = ANY($${params.length}::text[])))`);
       }
       return {
         where: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',
