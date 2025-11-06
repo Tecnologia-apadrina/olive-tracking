@@ -105,6 +105,11 @@ textarea:focus {
   border: 1px solid #15803d;
   color: #fff;
 }
+.btn-danger {
+  background: var(--danger);
+  border: 1px solid var(--danger);
+  color: #fff;
+}
 .btn-sm {
   padding: 0.35rem 0.7rem;
   font-size: 0.85rem;
@@ -472,6 +477,11 @@ textarea:focus {
 .metrics-filters {
   display: grid;
   gap: 0.75rem;
+}
+
+.metrics-filter-section {
+  display: grid;
+  gap: 0.6rem;
 }
 
 .metrics-filter-header {

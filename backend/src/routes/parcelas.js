@@ -166,4 +166,42 @@ router.patch('/parcelas/:id', requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
+// Delete parcela (admin only)
+router.delete('/parcelas/:id', requireAuth, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const rawForce = req.query.force;
+  const numericId = Number(id);
+  if (!Number.isInteger(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: 'id inválido' });
+  }
+  let relationCount = 0;
+  try {
+    const result = await db.public.one(
+      'SELECT COUNT(*)::int AS count FROM parcelas_palots WHERE id_parcela = $1',
+      [numericId]
+    );
+    relationCount = Number(result?.count ?? 0);
+  } catch (_) {
+    relationCount = 0;
+  }
+  const normalizedForce = typeof rawForce === 'string'
+    ? ['1', 'true', 'si', 'sí', 'yes', 'y'].includes(rawForce.trim().toLowerCase())
+    : false;
+  if (relationCount > 0 && !normalizedForce) {
+    return res.status(409).json({
+      error: 'La parcela tiene relaciones con palots',
+      relations: relationCount,
+    });
+  }
+  try {
+    // Remove dependent records before deleting the parcela to satisfy FK constraints.
+    await db.public.none('DELETE FROM parcelas_palots WHERE id_parcela = $1', [numericId]);
+    await db.public.none('DELETE FROM olivos WHERE id_parcela = $1', [numericId]);
+    await db.public.one('DELETE FROM parcelas WHERE id = $1 RETURNING id', [numericId]);
+    return res.status(204).end();
+  } catch (e) {
+    return res.status(404).json({ error: 'Parcela no encontrada' });
+  }
+});
+
 module.exports = router;

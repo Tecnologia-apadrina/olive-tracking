@@ -2163,15 +2163,22 @@ function MetricsView({ apiBase, authHeaders }) {
   const [estimateExtraDraft, setEstimateExtraDraft] = React.useState('10');
   const [estimateExtraError, setEstimateExtraError] = React.useState('');
   const [excludedParcelaIds, setExcludedParcelaIds] = React.useState([]);
+  const [excludedParajeIds, setExcludedParajeIds] = React.useState([]);
   const [parcelOptions, setParcelOptions] = React.useState([]);
+  const [parajeOptions, setParajeOptions] = React.useState([]);
   const [parcelSearch, setParcelSearch] = React.useState('');
+  const [parajeSearch, setParajeSearch] = React.useState('');
   const isOlivoMode = estimateMode === 'olivos';
 
   const load = React.useCallback(async () => {
     setStatus('loading');
     setError('');
     const excludeList = excludedParcelaIds.filter((id) => Number.isInteger(id) && id > 0);
-    const query = excludeList.length ? `?exclude=${excludeList.join(',')}` : '';
+    const excludeParajeList = excludedParajeIds.filter((id) => Number.isInteger(id) && id > 0);
+    const queryParams = new URLSearchParams();
+    if (excludeList.length) queryParams.set('exclude', excludeList.join(','));
+    if (excludeParajeList.length) queryParams.set('excludeParajes', excludeParajeList.join(','));
+    const query = queryParams.toString() ? `?${queryParams.toString()}` : '';
     try {
       const res = await fetch(`${apiBase}/metrics/harvest${query}`, { headers: { ...authHeaders } });
       const data = await res.json().catch(() => ({}));
@@ -2267,12 +2274,27 @@ function MetricsView({ apiBase, authHeaders }) {
         });
       }
 
+      const parajeOptionsFromApi = Array.isArray(data.parajeOptions) ? data.parajeOptions : [];
+      const normalizedParajeOptions = parajeOptionsFromApi
+        .map((option) => {
+          const id = Number(option.id);
+          if (!Number.isInteger(id) || id <= 0) return null;
+          return { id, nombre: option.nombre || '' };
+        })
+        .filter(Boolean)
+        .sort((a, b) => {
+          const nameCmp = String(a.nombre || '').localeCompare(String(b.nombre || ''), 'es', { sensitivity: 'base' });
+          if (nameCmp !== 0) return nameCmp;
+          return a.id - b.id;
+        });
+      setParajeOptions(normalizedParajeOptions);
+
       setStatus('ready');
     } catch (err) {
       setError(err.message || 'No se pudieron cargar las métricas');
       setStatus('error');
     }
-  }, [apiBase, authHeaders, excludedParcelaIds]);
+  }, [apiBase, authHeaders, excludedParcelaIds, excludedParajeIds]);
 
   React.useEffect(() => {
     load();
@@ -2478,6 +2500,34 @@ function MetricsView({ apiBase, authHeaders }) {
     return matches;
   }, [parcelOptions, parcelSearch, excludedParcelaIds]);
 
+  const filteredParajeOptions = React.useMemo(() => {
+    const base = Array.isArray(parajeOptions) ? parajeOptions : [];
+    const searchValue = parajeSearch.trim().toLowerCase();
+    const selectedSet = new Set(excludedParajeIds);
+    const matches = [];
+    for (const option of base) {
+      if (!option || !Number.isInteger(option.id)) continue;
+      const name = String(option.nombre || '');
+      const normalizedName = name.toLowerCase();
+      const idString = String(option.id);
+      const matchesSearch = searchValue === ''
+        || normalizedName.includes(searchValue)
+        || idString.includes(searchValue);
+      if (matchesSearch || selectedSet.has(option.id)) {
+        matches.push({ id: option.id, nombre: name });
+      }
+    }
+    matches.sort((a, b) => {
+      const aSelected = selectedSet.has(a.id);
+      const bSelected = selectedSet.has(b.id);
+      if (aSelected !== bSelected) return aSelected ? -1 : 1;
+      const nameCmp = String(a.nombre || '').localeCompare(String(b.nombre || ''), 'es', { sensitivity: 'base' });
+      if (nameCmp !== 0) return nameCmp;
+      return a.id - b.id;
+    });
+    return matches;
+  }, [parajeOptions, parajeSearch, excludedParajeIds]);
+
   const toggleExcludedParcela = React.useCallback((parcelaId) => {
     const numeric = Number(parcelaId);
     if (!Number.isInteger(numeric) || numeric <= 0) return;
@@ -2493,6 +2543,22 @@ function MetricsView({ apiBase, authHeaders }) {
   const clearExcludedParcelas = React.useCallback(() => {
     setExcludedParcelaIds((prev) => (prev.length ? [] : prev));
   }, [setExcludedParcelaIds]);
+
+  const toggleExcludedParaje = React.useCallback((parajeId) => {
+    const numeric = Number(parajeId);
+    if (!Number.isInteger(numeric) || numeric <= 0) return;
+    setExcludedParajeIds((prev) => {
+      if (prev.includes(numeric)) {
+        return prev.filter((id) => id !== numeric);
+      }
+      const next = [...prev, numeric].sort((a, b) => a - b);
+      return next;
+    });
+  }, []);
+
+  const clearExcludedParajes = React.useCallback(() => {
+    setExcludedParajeIds((prev) => (prev.length ? [] : prev));
+  }, []);
 
   const parcelasRestantes = Math.max(Number(totalParcelas || 0) - Number(resumenTotales.parcelas || 0), 0);
   const safeProgress = Number.isFinite(harvestProgressPct) ? Math.min(Math.max(harvestProgressPct, 0), 100) : 0;
@@ -2533,63 +2599,124 @@ function MetricsView({ apiBase, authHeaders }) {
       )}
       {status !== 'idle' && (
         <div className="metrics-filters">
-          <div className="metrics-filter-header">
-            <div className="metrics-filter-search">
-              <label htmlFor="metrics-exclude-search">Excluir parcelas de las métricas</label>
-              <input
-                id="metrics-exclude-search"
-                type="text"
-                value={parcelSearch}
-                onChange={(event) => setParcelSearch(event.target.value)}
-                placeholder="Busca por nombre o id de parcela"
-              />
+          <div className="metrics-filter-section">
+            <div className="metrics-filter-header">
+              <div className="metrics-filter-search">
+                <label htmlFor="metrics-exclude-search">Excluir parcelas de las métricas</label>
+                <input
+                  id="metrics-exclude-search"
+                  type="text"
+                  value={parcelSearch}
+                  onChange={(event) => setParcelSearch(event.target.value)}
+                  placeholder="Busca por nombre o id de parcela"
+                />
+              </div>
+              <div className="metrics-filter-actions">
+                {excludedParcelaIds.length > 0 && (
+                  <>
+                    <span className="pill pill-info metrics-excluded-pill">
+                      Excluyendo {excludedParcelaIds.length} {excludedParcelaIds.length === 1 ? 'parcela' : 'parcelas'}
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-sm"
+                      onClick={clearExcludedParcelas}
+                    >
+                      Quitar exclusiones
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
-            <div className="metrics-filter-actions">
-              {excludedParcelaIds.length > 0 && (
-                <>
-                  <span className="pill pill-info metrics-excluded-pill">
-                    Excluyendo {excludedParcelaIds.length} {excludedParcelaIds.length === 1 ? 'parcela' : 'parcelas'}
-                  </span>
-                  <button
-                    type="button"
-                    className="btn btn-outline btn-sm"
-                    onClick={clearExcludedParcelas}
-                  >
-                    Quitar exclusiones
-                  </button>
-                </>
-              )}
-            </div>
+            {status === 'loading' && parcelOptions.length === 0 ? (
+              <div className="metrics-exclude-empty muted">Cargando listado de parcelas…</div>
+            ) : status === 'error' && parcelOptions.length === 0 ? (
+              <div className="metrics-exclude-empty muted">No se pudieron cargar las parcelas.</div>
+            ) : filteredParcelOptions.length > 0 ? (
+              <div className="tag-pill-group metrics-exclude-list">
+                {filteredParcelOptions.map((option) => {
+                  const isSelected = excludedParcelaIds.includes(option.id);
+                  const label = option.nombre ? option.nombre : `Parcela #${option.id}`;
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      className={`pill tag-pill ${isSelected ? 'tag-pill-selected' : ''}`}
+                      onClick={() => toggleExcludedParcela(option.id)}
+                      aria-pressed={isSelected}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="metrics-exclude-empty muted">
+                {parcelOptions.length === 0
+                  ? 'No se encontraron parcelas registradas.'
+                  : 'No hay parcelas que coincidan con la búsqueda.'}
+              </div>
+            )}
           </div>
-          {status === 'loading' && parcelOptions.length === 0 ? (
-            <div className="metrics-exclude-empty muted">Cargando listado de parcelas…</div>
-          ) : status === 'error' && parcelOptions.length === 0 ? (
-            <div className="metrics-exclude-empty muted">No se pudieron cargar las parcelas.</div>
-          ) : filteredParcelOptions.length > 0 ? (
-            <div className="tag-pill-group metrics-exclude-list">
-              {filteredParcelOptions.map((option) => {
-                const isSelected = excludedParcelaIds.includes(option.id);
-                const label = option.nombre ? option.nombre : `Parcela #${option.id}`;
-                return (
-                  <button
-                    key={option.id}
-                    type="button"
-                    className={`pill tag-pill ${isSelected ? 'tag-pill-selected' : ''}`}
-                    onClick={() => toggleExcludedParcela(option.id)}
-                    aria-pressed={isSelected}
-                  >
-                    {label}
-                  </button>
-                );
-              })}
+          <div className="metrics-filter-section">
+            <div className="metrics-filter-header">
+              <div className="metrics-filter-search">
+                <label htmlFor="metrics-paraje-search">Excluir por paraje</label>
+                <input
+                  id="metrics-paraje-search"
+                  type="text"
+                  value={parajeSearch}
+                  onChange={(event) => setParajeSearch(event.target.value)}
+                  placeholder="Busca por nombre o id de paraje"
+                />
+              </div>
+              <div className="metrics-filter-actions">
+                {excludedParajeIds.length > 0 && (
+                  <>
+                    <span className="pill pill-info metrics-excluded-pill">
+                      Excluyendo {excludedParajeIds.length} {excludedParajeIds.length === 1 ? 'paraje' : 'parajes'}
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-sm"
+                      onClick={clearExcludedParajes}
+                    >
+                      Quitar exclusiones
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
-          ) : (
-            <div className="metrics-exclude-empty muted">
-              {parcelOptions.length === 0
-                ? 'No se encontraron parcelas registradas.'
-                : 'No hay parcelas que coincidan con la búsqueda.'}
-            </div>
-          )}
+            {status === 'loading' && parajeOptions.length === 0 ? (
+              <div className="metrics-exclude-empty muted">Cargando listado de parajes…</div>
+            ) : status === 'error' && parajeOptions.length === 0 ? (
+              <div className="metrics-exclude-empty muted">No se pudieron cargar los parajes.</div>
+            ) : filteredParajeOptions.length > 0 ? (
+              <div className="tag-pill-group metrics-exclude-list">
+                {filteredParajeOptions.map((option) => {
+                  const isSelected = excludedParajeIds.includes(option.id);
+                  const label = option.nombre ? option.nombre : `Paraje #${option.id}`;
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      className={`pill tag-pill ${isSelected ? 'tag-pill-selected' : ''}`}
+                      onClick={() => toggleExcludedParaje(option.id)}
+                      aria-pressed={isSelected}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="metrics-exclude-empty muted">
+                {parajeOptions.length === 0
+                  ? 'No se encontraron parajes registrados.'
+                  : 'No hay parajes que coincidan con la búsqueda.'}
+              </div>
+            )}
+          </div>
         </div>
       )}
       {status === 'ready' && (
@@ -3355,6 +3482,9 @@ function ParcelasView({ apiBase, authHeaders }) {
   const [pctDrafts, setPctDrafts] = React.useState({});
   const [pctStatus, setPctStatus] = React.useState({});
   const [pctMessage, setPctMessage] = React.useState({});
+  const [deleteStatus, setDeleteStatus] = React.useState({});
+  const [deleteMessage, setDeleteMessage] = React.useState({});
+  const [collapsedGroups, setCollapsedGroups] = React.useState({});
   const [groupByParaje, setGroupByParaje] = React.useState(false);
   const load = async () => {
     setStatus('loading');
@@ -3369,6 +3499,9 @@ function ParcelasView({ apiBase, authHeaders }) {
       setPctDrafts(drafts);
       setPctStatus({});
       setPctMessage({});
+      setDeleteStatus({});
+      setDeleteMessage({});
+      setCollapsedGroups({});
       setGroupByParaje(false);
       setStatus('ready');
     } catch (e) {
@@ -3455,6 +3588,94 @@ function ParcelasView({ apiBase, authHeaders }) {
     }
   };
 
+  const handleDeleteParcela = async (row) => {
+    const label = row?.nombre ? `la parcela "${row.nombre}"` : `la parcela #${row?.id}`;
+    if (!confirm(`¿Eliminar ${label}? Esta acción no se puede deshacer.`)) {
+      return;
+    }
+    setDeleteStatus(prev => ({ ...prev, [row.id]: 'deleting' }));
+    setDeleteMessage(prev => ({ ...prev, [row.id]: '' }));
+    const attemptDelete = async (force) => {
+      const url = force ? `${apiBase}/parcelas/${row.id}?force=1` : `${apiBase}/parcelas/${row.id}`;
+      const res = await fetch(url, {
+        method: 'DELETE',
+        headers: { ...authHeaders },
+      });
+      if (res.status === 409 && !force) {
+        const data = await res.json().catch(() => ({}));
+        const relationCount = Number(data?.relations ?? 0);
+        const prefix = relationCount > 0
+          ? `La parcela tiene ${relationCount} relación${relationCount === 1 ? '' : 'es'} con palots.`
+          : data?.error || 'La parcela tiene relaciones con palots.';
+        const confirmForce = confirm(`${prefix} ¿Quieres eliminarla de todas formas?`);
+        if (!confirmForce) {
+          setDeleteStatus(prev => ({ ...prev, [row.id]: 'idle' }));
+          return false;
+        }
+        return attemptDelete(true);
+      }
+      if (!res.ok) {
+        let message = 'Error eliminando';
+        try {
+          const errData = await res.json();
+          if (errData?.error) message = errData.error;
+        } catch (_) {}
+        throw new Error(message);
+      }
+      return true;
+    };
+    try {
+      const deleted = await attemptDelete(false);
+      if (!deleted) {
+        return;
+      }
+      setRows(prev => prev.filter(item => item.id !== row.id));
+      setPctDrafts(prev => {
+        const next = { ...prev };
+        delete next[row.id];
+        return next;
+      });
+      setPctStatus(prev => {
+        const next = { ...prev };
+        delete next[row.id];
+        return next;
+      });
+      setPctMessage(prev => {
+        const next = { ...prev };
+        delete next[row.id];
+        return next;
+      });
+      setDeleteStatus(prev => {
+        const next = { ...prev };
+        delete next[row.id];
+        return next;
+      });
+      setDeleteMessage(prev => {
+        const next = { ...prev };
+        delete next[row.id];
+        return next;
+      });
+    } catch (error) {
+      setDeleteStatus(prev => ({ ...prev, [row.id]: 'error' }));
+      setDeleteMessage(prev => ({ ...prev, [row.id]: error?.message || 'Error eliminando' }));
+    }
+  };
+
+  const handleToggleGroupByParaje = () => {
+    setCollapsedGroups({});
+    setGroupByParaje(prev => !prev);
+  };
+
+  const toggleGroupCollapsed = (groupKey) => {
+    setCollapsedGroups(prev => {
+      const current = prev[groupKey] ?? true;
+      return {
+        ...prev,
+        [groupKey]: !current,
+      };
+    });
+  };
+
   const groupedParcelas = React.useMemo(() => {
     const groups = new Map();
     for (const row of rows) {
@@ -3481,6 +3702,8 @@ function ParcelasView({ apiBase, authHeaders }) {
   const renderParcelaRow = (p) => {
     const pctState = pctStatus[p.id];
     const message = pctMessage[p.id] || '';
+    const delState = deleteStatus[p.id];
+    const delMessage = deleteMessage[p.id] || '';
     return (
       <div key={p.id} className="list-row" style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '0.5rem' }}>
         <div className="name">#{p.id} · {p.nombre || '(sin nombre)'}</div>
@@ -3511,6 +3734,14 @@ function ParcelasView({ apiBase, authHeaders }) {
             </button>
             {pctState === 'ok' && <span className="state ok">{message || 'Guardado'}</span>}
             {pctState === 'error' && <span className="state error">{message || 'Error'}</span>}
+            <button
+              className="btn btn-danger"
+              onClick={() => handleDeleteParcela(p)}
+              disabled={delState === 'deleting'}
+            >
+              {delState === 'deleting' ? 'Eliminando…' : 'Eliminar'}
+            </button>
+            {delState === 'error' && <span className="state error">{delMessage || 'Error eliminando'}</span>}
           </div>
         </div>
       </div>
@@ -3567,7 +3798,7 @@ function ParcelasView({ apiBase, authHeaders }) {
               <button
                 type="button"
                 className={`btn btn-outline`}
-                onClick={() => setGroupByParaje((prev) => !prev)}
+                onClick={handleToggleGroupByParaje}
               >
                 {groupByParaje ? 'Ver listado' : 'Agrupar por paraje'}
               </button>
@@ -3583,10 +3814,21 @@ function ParcelasView({ apiBase, authHeaders }) {
                             ({group.items.length} parcela{group.items.length === 1 ? '' : 's'})
                           </span>
                         </h3>
+                        <button
+                          type="button"
+                          className="btn btn-outline btn-sm"
+                          onClick={() => toggleGroupCollapsed(group.key)}
+                        >
+                          {(collapsedGroups[group.key] ?? true) ? 'Expandir' : 'Colapsar'}
+                        </button>
                       </div>
-                      <div className="paraje-group-list">
-                        {group.items.map((item) => renderParcelaRow(item))}
-                      </div>
+                      {(collapsedGroups[group.key] ?? true)
+                        ? <span className="muted">Grupo colapsado</span>
+                        : (
+                          <div className="paraje-group-list">
+                            {group.items.map((item) => renderParcelaRow(item))}
+                          </div>
+                        )}
                     </div>
                   ))
                 : rows.map((item) => renderParcelaRow(item))}
