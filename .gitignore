@@ -7,7 +7,7 @@ pnpm-debug.log*
 *.log
 
 ### Environment files
-#.env
+.env
 .env.*
 backend/.env
 backend/.env.*
