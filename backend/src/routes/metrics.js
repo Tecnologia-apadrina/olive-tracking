@@ -14,6 +14,17 @@ const requireAdminOrMetrics = (req, res, next) => {
   next();
 };
 
+const MUNICIPIO_LABELS = {
+  '181': 'Oliete',
+  '81': 'Oliete',
+  '006': 'Alacón',
+  '6': 'Alacón',
+  '022': 'Ariño',
+  '22': 'Ariño',
+  '025': 'Andorra',
+  '25': 'Andorra',
+};
+
 const parseExcludeIds = (raw) => {
   if (!raw) return [];
   const parts = Array.isArray(raw) ? raw : String(raw).split(',');
@@ -30,10 +41,26 @@ const parseExcludeIds = (raw) => {
   return ids;
 };
 
+const parseMunicipioCodes = (raw) => {
+  if (!raw) return [];
+  const parts = Array.isArray(raw) ? raw : String(raw).split(',');
+  const codes = [];
+  for (const part of parts) {
+    if (part === undefined || part === null) continue;
+    const trimmed = String(part).trim();
+    if (trimmed === '') continue;
+    if (!codes.includes(trimmed)) {
+      codes.push(trimmed);
+    }
+  }
+  return codes;
+};
+
 router.get('/metrics/harvest', requireAuth, requireAdminOrMetrics, async (req, res) => {
   try {
     const excludeIds = parseExcludeIds(req.query.exclude);
     const excludeParajeIds = parseExcludeIds(req.query.excludeParajes || req.query.exclude_parajes);
+    const includeMunicipios = parseMunicipioCodes(req.query.municipios || req.query.municipio);
 
     const buildFilterClause = (alias) => {
       const clauses = [];
@@ -45,6 +72,10 @@ router.get('/metrics/harvest', requireAuth, requireAdminOrMetrics, async (req, r
       if (excludeParajeIds.length) {
         params.push(excludeParajeIds);
         clauses.push(`(${alias}.paraje_id IS NULL OR NOT (${alias}.paraje_id = ANY($${params.length}::int[])))`);
+      }
+      if (includeMunicipios.length) {
+        params.push(includeMunicipios);
+        clauses.push(`${alias}.sigpac_municipio = ANY($${params.length}::text[])`);
       }
       return {
         where: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',
@@ -163,7 +194,41 @@ router.get('/metrics/harvest', requireAuth, requireAdminOrMetrics, async (req, r
         return a.id - b.id;
       });
 
-    res.json({ totalParcelas, totalOlivos, byDay, perParcela, parcelOptions, parajeOptions });
+    const municipioOptionsRaw = await db.public.many(
+      `SELECT DISTINCT sigpac_municipio AS code
+         FROM parcelas
+        WHERE sigpac_municipio IS NOT NULL
+          AND sigpac_municipio <> ''
+        ORDER BY sigpac_municipio`
+    );
+    const municipioOptions = municipioOptionsRaw
+      .map((row) => {
+        const rawCode = row.code;
+        if (rawCode === undefined || rawCode === null) return null;
+        const code = String(rawCode).trim();
+        if (!code) return null;
+        const normalized = code.replace(/^0+/, '') || '0';
+        const label = MUNICIPIO_LABELS[code]
+          || MUNICIPIO_LABELS[normalized]
+          || `Municipio ${code}`;
+        return { code, nombre: label };
+      })
+      .filter(Boolean)
+      .sort((a, b) => {
+        const nameCmp = String(a.nombre || '').localeCompare(String(b.nombre || ''), 'es', { sensitivity: 'base' });
+        if (nameCmp !== 0) return nameCmp;
+        return String(a.code || '').localeCompare(String(b.code || ''));
+      });
+
+    res.json({
+      totalParcelas,
+      totalOlivos,
+      byDay,
+      perParcela,
+      parcelOptions,
+      parajeOptions,
+      municipioOptions,
+    });
   } catch (error) {
     console.error('Metrics harvest error', error);
     res.status(500).json({ error: 'No se pudieron obtener las métricas' });

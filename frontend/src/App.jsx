@@ -835,13 +835,13 @@ function App() {
         const relRes = await fetch(`${apiBase}/parcelas/${parcelaId}/palots`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...authHeaders },
-          body: JSON.stringify({
-            palot_id: palotRow.id,
-            kgs: normalizedKgs,
-            reservado_aderezo: false,
-            notas: hasNotes ? rawNotes : null,
-            etiquetas: tagIds,
-          })
+            body: JSON.stringify({
+              palot_id: palotRow.id,
+              kgs: normalizedKgs,
+              reservado_aderezo: false,
+              notas: hasNotes ? rawNotes : null,
+              etiquetas: tagIds,
+            })
         });
         if (relRes.status === 401) {
           const err = new Error('No autenticado');
@@ -1318,7 +1318,7 @@ function App() {
     }
   };
 
-  const handleSaveParcelTags = async (relation, draftIds) => {
+  const handleSaveParcelTags = async (relation, draftIds, previousIds = null) => {
     if (!relation) return;
     const relationId = Number(relation.id);
     const parcelId = Number(relation.parcela_id);
@@ -1360,6 +1360,13 @@ function App() {
       }, 1200);
     } catch (error) {
       setTagSaveStatus((s) => ({ ...s, [parcelId]: 'error' }));
+      if (Array.isArray(previousIds)) {
+        const fallback = Array.from(new Set(previousIds.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0))).sort((a, b) => a - b);
+        setParcelaTagDrafts((prev) => ({ ...prev, [parcelId]: fallback }));
+        if (parcelaId === parcelId) {
+          setSelectedTagIds(fallback);
+        }
+      }
     }
   };
 
@@ -1445,6 +1452,7 @@ function App() {
     }
   };
 
+  const [menuOpen, setMenuOpen] = useState(false);
   const handleTogglePalotAderezoReservation = async ({ palotId, palotCodigo, relations }) => {
     if (authRole !== 'campo') return;
     const palotKey = palotKeyForState(palotId, palotCodigo);
@@ -1459,14 +1467,16 @@ function App() {
 
     setAderezoSaveStatus((s) => ({ ...s, [palotKey]: 'saving' }));
     try {
-      await Promise.all(actionable.map((rel) => fetch(`${apiBase}/parcelas-palots/${Number(rel.id)}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', ...authHeaders },
-        body: JSON.stringify({ reservado_aderezo: nextValue })
-      }).then((res) => {
-        if (!res.ok) throw new Error('No se pudo actualizar la reserva');
-        return res.json().catch(() => ({}));
-      })));
+      await Promise.all(actionable.map((rel) =>
+        fetch(`${apiBase}/parcelas-palots/${Number(rel.id)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', ...authHeaders },
+          body: JSON.stringify({ reservado_aderezo: nextValue })
+        }).then((res) => {
+          if (!res.ok) throw new Error('No se pudo actualizar la reserva');
+          return res.json().catch(() => ({}));
+        })
+      ));
 
       const updateRows = (rows = []) => rows.map((row) => {
         const key = getRelationKey(row);
@@ -1487,7 +1497,6 @@ function App() {
     }
   };
 
-  const [menuOpen, setMenuOpen] = useState(false);
   const renderPalotGroup = (g) => {
     const groupKey = g.palot_id != null ? g.palot_id : `code:${toStringSafe(g.palot_codigo)}`;
     const isCollapsed = collapsedPalots[g.palot_id] !== false;
@@ -1562,6 +1571,25 @@ function App() {
               const normalizedTagDraft = Array.from(new Set(baseTagDraft)).sort((a, b) => a - b);
               const tagStatus = coalesce(tagSaveStatus[parcelId], 'idle');
               const canEditTags = !r.pending && Number.isFinite(Number(r?.id));
+              const relationTagDetails = Array.isArray(r.parcela_etiquetas) ? r.parcela_etiquetas : [];
+              const tagEntries = relationTagDetails.length > 0
+                ? relationTagDetails.map((tag) => {
+                    const tagId = tag && tag.id != null ? Number(tag.id) : null;
+                    const label = tag && tag.nombre ? tag.nombre : (tagId != null ? `Etiqueta ${tagId}` : 'Etiqueta');
+                    return {
+                      key: tagId != null ? `${relKey}-cedente-tag-${tagId}` : `${relKey}-cedente-tag-${label}`,
+                      label,
+                    };
+                  })
+                : normalizedTagDraft.map((id) => {
+                    const match = (availableTags || []).find((tag) => Number(tag.id) === id);
+                    const label = match && match.nombre ? match.nombre : `Etiqueta ${id}`;
+                    return { key: `${relKey}-cedente-tag-${id}`, label };
+                  });
+              const relationTagLabels = tagEntries.filter((entry) => {
+                const normalized = entry.label ? entry.label.trim().toLowerCase() : '';
+                return normalized !== 'no cosechar';
+              });
               return (
                 <div
                   key={r.id || relKey}
@@ -1572,7 +1600,12 @@ function App() {
                     <span className="kv-pending" style={{ gridColumn: '1 / -1' }}>Pendiente de sincronización</span>
                   )}
                   {hasPct && (
-                    <span className="kv-warning" style={{ gridColumn: '1 / -1' }}>Parcela cedente ({String(r.parcela_porcentaje)}%)</span>
+                    <div className="kv-warning" style={{ gridColumn: '1 / -1', flexWrap: 'wrap' }}>
+                      <span>Parcela cedente ({String(r.parcela_porcentaje)}%)</span>
+                      {relationTagLabels.map(({ key, label }) => (
+                        <span key={key} className="pill pill-info">{label}</span>
+                      ))}
+                    </div>
                   )}
                   <div className="kg-editor" style={{ gridColumn: '1 / -1' }}>
                     <label className="kg-label" htmlFor={`kg-${relKey}`}>Kgs</label>
@@ -1633,15 +1666,19 @@ function App() {
                                 event.preventDefault();
                                 event.stopPropagation();
                                 if (!canEditTags || tagStatus === 'saving') return;
-                                setParcelaTagDrafts((prev) => {
-                                  const current = Array.isArray(prev[parcelId]) ? prev[parcelId] : normalizedTagDraft;
-                                  const exists = current.includes(tagId);
-                                  const next = exists ? current.filter((id) => id !== tagId) : [...current, tagId];
-                                  return {
-                                    ...prev,
-                                    [parcelId]: Array.from(new Set(next)).sort((a, b) => a - b),
-                                  };
-                                });
+                                const currentDraft = Array.isArray(parcelaTagDrafts[parcelId])
+                                  ? parcelaTagDrafts[parcelId]
+                                  : normalizedTagDraft;
+                                const exists = currentDraft.includes(tagId);
+                                const next = exists
+                                  ? currentDraft.filter((id) => id !== tagId)
+                                  : [...currentDraft, tagId];
+                                const normalizedNext = Array.from(new Set(next)).sort((a, b) => a - b);
+                                setParcelaTagDrafts((prev) => ({
+                                  ...prev,
+                                  [parcelId]: normalizedNext,
+                                }));
+                                handleSaveParcelTags(r, normalizedNext, currentDraft);
                               }}
                               disabled={!canEditTags || tagStatus === 'saving'}
                               aria-pressed={selected}
@@ -1654,20 +1691,9 @@ function App() {
                     )}
                     {availableTags.length > 0 && (
                       <div style={{ marginTop: '0.4rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-                        <button
-                          type="button"
-                          className="btn btn-sm"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            const payloadIds = Array.isArray(parcelaTagDrafts[parcelId]) ? parcelaTagDrafts[parcelId] : normalizedTagDraft;
-                            handleSaveParcelTags(r, payloadIds);
-                          }}
-                          disabled={!canEditTags || tagStatus === 'saving' || !isOnline}
-                        >
-                          {tagStatus === 'saving' ? 'Guardando…' : 'Guardar etiquetas'}
-                        </button>
+                        {tagStatus === 'saving' && <span className="muted">Guardando…</span>}
                         {tagStatus === 'ok' && <span className="state ok">OK</span>}
-                        {tagStatus === 'error' && <span className="state error">Error</span>}
+                        {tagStatus === 'error' && <span className="state error">Error al guardar</span>}
                         {!isOnline && <span className="muted">Sin conexión</span>}
                       </div>
                     )}
@@ -2164,10 +2190,13 @@ function MetricsView({ apiBase, authHeaders }) {
   const [estimateExtraError, setEstimateExtraError] = React.useState('');
   const [excludedParcelaIds, setExcludedParcelaIds] = React.useState([]);
   const [excludedParajeIds, setExcludedParajeIds] = React.useState([]);
+  const [selectedMunicipios, setSelectedMunicipios] = React.useState([]);
   const [parcelOptions, setParcelOptions] = React.useState([]);
   const [parajeOptions, setParajeOptions] = React.useState([]);
+  const [municipioOptions, setMunicipioOptions] = React.useState([]);
   const [parcelSearch, setParcelSearch] = React.useState('');
   const [parajeSearch, setParajeSearch] = React.useState('');
+  const [municipioSearch, setMunicipioSearch] = React.useState('');
   const isOlivoMode = estimateMode === 'olivos';
 
   const load = React.useCallback(async () => {
@@ -2175,9 +2204,13 @@ function MetricsView({ apiBase, authHeaders }) {
     setError('');
     const excludeList = excludedParcelaIds.filter((id) => Number.isInteger(id) && id > 0);
     const excludeParajeList = excludedParajeIds.filter((id) => Number.isInteger(id) && id > 0);
+    const municipioList = selectedMunicipios
+      .map((code) => String(code).trim())
+      .filter((code) => code.length > 0);
     const queryParams = new URLSearchParams();
     if (excludeList.length) queryParams.set('exclude', excludeList.join(','));
     if (excludeParajeList.length) queryParams.set('excludeParajes', excludeParajeList.join(','));
+    if (municipioList.length) queryParams.set('municipios', municipioList.join(','));
     const query = queryParams.toString() ? `?${queryParams.toString()}` : '';
     try {
       const res = await fetch(`${apiBase}/metrics/harvest${query}`, { headers: { ...authHeaders } });
@@ -2289,12 +2322,31 @@ function MetricsView({ apiBase, authHeaders }) {
         });
       setParajeOptions(normalizedParajeOptions);
 
+      const municipioOptionsFromApi = Array.isArray(data.municipioOptions) ? data.municipioOptions : [];
+      const normalizedMunicipioOptions = municipioOptionsFromApi
+        .map((option) => {
+          if (!option) return null;
+          const code = String(option.code ?? '').trim();
+          if (!code) return null;
+          return {
+            code,
+            nombre: option.nombre || `Municipio ${code}`,
+          };
+        })
+        .filter(Boolean)
+        .sort((a, b) => {
+          const nameCmp = String(a.nombre || '').localeCompare(String(b.nombre || ''), 'es', { sensitivity: 'base' });
+          if (nameCmp !== 0) return nameCmp;
+          return String(a.code || '').localeCompare(String(b.code || ''));
+        });
+      setMunicipioOptions(normalizedMunicipioOptions);
+
       setStatus('ready');
     } catch (err) {
       setError(err.message || 'No se pudieron cargar las métricas');
       setStatus('error');
     }
-  }, [apiBase, authHeaders, excludedParcelaIds, excludedParajeIds]);
+  }, [apiBase, authHeaders, excludedParcelaIds, excludedParajeIds, selectedMunicipios]);
 
   React.useEffect(() => {
     load();
@@ -2528,6 +2580,34 @@ function MetricsView({ apiBase, authHeaders }) {
     return matches;
   }, [parajeOptions, parajeSearch, excludedParajeIds]);
 
+  const filteredMunicipioOptions = React.useMemo(() => {
+    const base = Array.isArray(municipioOptions) ? municipioOptions : [];
+    const searchValue = municipioSearch.trim().toLowerCase();
+    const selectedSet = new Set(selectedMunicipios.map((code) => String(code)));
+    const matches = [];
+    for (const option of base) {
+      if (!option || !option.code) continue;
+      const code = String(option.code);
+      const name = String(option.nombre || '');
+      const normalizedName = name.toLowerCase();
+      const matchesSearch = searchValue === ''
+        || normalizedName.includes(searchValue)
+        || code.toLowerCase().includes(searchValue);
+      if (matchesSearch || selectedSet.has(code)) {
+        matches.push({ code, nombre: name });
+      }
+    }
+    matches.sort((a, b) => {
+      const aSelected = selectedSet.has(a.code);
+      const bSelected = selectedSet.has(b.code);
+      if (aSelected !== bSelected) return aSelected ? -1 : 1;
+      const nameCmp = String(a.nombre || '').localeCompare(String(b.nombre || ''), 'es', { sensitivity: 'base' });
+      if (nameCmp !== 0) return nameCmp;
+      return String(a.code || '').localeCompare(String(b.code || ''));
+    });
+    return matches;
+  }, [municipioOptions, municipioSearch, selectedMunicipios]);
+
   const toggleExcludedParcela = React.useCallback((parcelaId) => {
     const numeric = Number(parcelaId);
     if (!Number.isInteger(numeric) || numeric <= 0) return;
@@ -2558,6 +2638,21 @@ function MetricsView({ apiBase, authHeaders }) {
 
   const clearExcludedParajes = React.useCallback(() => {
     setExcludedParajeIds((prev) => (prev.length ? [] : prev));
+  }, []);
+
+  const toggleMunicipioSelection = React.useCallback((code) => {
+    const normalized = String(code ?? '').trim();
+    if (!normalized) return;
+    setSelectedMunicipios((prev) => {
+      if (prev.includes(normalized)) {
+        return prev.filter((item) => item !== normalized);
+      }
+      return [...prev, normalized].sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base' }));
+    });
+  }, []);
+
+  const clearSelectedMunicipios = React.useCallback(() => {
+    setSelectedMunicipios((prev) => (prev.length ? [] : prev));
   }, []);
 
   const parcelasRestantes = Math.max(Number(totalParcelas || 0) - Number(resumenTotales.parcelas || 0), 0);
@@ -2714,6 +2809,65 @@ function MetricsView({ apiBase, authHeaders }) {
                 {parajeOptions.length === 0
                   ? 'No se encontraron parajes registrados.'
                   : 'No hay parajes que coincidan con la búsqueda.'}
+              </div>
+            )}
+          </div>
+          <div className="metrics-filter-section">
+            <div className="metrics-filter-header">
+              <div className="metrics-filter-search">
+                <label htmlFor="metrics-municipio-search">Filtrar por municipio</label>
+                <input
+                  id="metrics-municipio-search"
+                  type="text"
+                  value={municipioSearch}
+                  onChange={(event) => setMunicipioSearch(event.target.value)}
+                  placeholder="Busca por nombre o código SIGPAC"
+                />
+              </div>
+              <div className="metrics-filter-actions">
+                {selectedMunicipios.length > 0 && (
+                  <>
+                    <span className="pill pill-info metrics-excluded-pill">
+                      Filtrando {selectedMunicipios.length} {selectedMunicipios.length === 1 ? 'municipio' : 'municipios'}
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-sm"
+                      onClick={clearSelectedMunicipios}
+                    >
+                      Limpiar filtro
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+            {status === 'loading' && municipioOptions.length === 0 ? (
+              <div className="metrics-exclude-empty muted">Cargando listado de municipios…</div>
+            ) : status === 'error' && municipioOptions.length === 0 ? (
+              <div className="metrics-exclude-empty muted">No se pudieron cargar los municipios.</div>
+            ) : filteredMunicipioOptions.length > 0 ? (
+              <div className="tag-pill-group metrics-exclude-list">
+                {filteredMunicipioOptions.map((option) => {
+                  const isSelected = selectedMunicipios.includes(option.code);
+                  const label = option.nombre ? `${option.nombre} (${option.code})` : `Municipio ${option.code}`;
+                  return (
+                    <button
+                      key={option.code}
+                      type="button"
+                      className={`pill tag-pill ${isSelected ? 'tag-pill-selected' : ''}`}
+                      onClick={() => toggleMunicipioSelection(option.code)}
+                      aria-pressed={isSelected}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="metrics-exclude-empty muted">
+                {municipioOptions.length === 0
+                  ? 'No se encontraron municipios registrados.'
+                  : 'No hay municipios que coincidan con la búsqueda.'}
               </div>
             )}
           </div>

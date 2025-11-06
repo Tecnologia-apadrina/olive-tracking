@@ -282,15 +282,17 @@ router.patch('/parcelas-palots/:id', async (req, res) => {
       );
     }
     updated = await fetchRelationWithDetails(id);
+    const rawParcelaId = Number(updated?.parcela_id);
+    const parcelaId = Number.isInteger(rawParcelaId) ? rawParcelaId : null;
     let tags = [];
-    if (etiquetasProvided) {
+    if (etiquetasProvided && parcelaId !== null) {
       try {
-        tags = await setParcelTags(Number(updated.id_parcela), etiquetas);
+        tags = await setParcelTags(parcelaId, etiquetas);
       } catch (_) {
-        tags = await fetchParcelTags(Number(updated.id_parcela));
+        tags = await fetchParcelTags(parcelaId);
       }
-    } else {
-      tags = await fetchParcelTags(Number(updated.id_parcela));
+    } else if (parcelaId !== null) {
+      tags = await fetchParcelTags(parcelaId);
     }
     res.json({
       ...updated,
