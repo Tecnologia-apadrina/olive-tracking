@@ -23,7 +23,7 @@ import { syncAll, syncDown, syncUp } from './offline/sync';
 
 const DEFAULT_CEDENTE_KGS = 300;
 const LOW_KGS_THRESHOLD = 300;
-const LOW_KGS_EXTRA_OPTIONS = [5, 10, 15, 20, 25];
+const LOW_KGS_EXTRA_OPTIONS = [0, 5, 10, 15, 20, 25, 30];
 const toStringSafe = (value) => String(value === undefined || value === null ? '' : value);
 const coalesce = (value, fallback) => (value === undefined || value === null ? fallback : value);
 const toTagIds = (list) => {
@@ -2471,7 +2471,7 @@ function MetricsView({ apiBase, authHeaders }) {
   const handleLowKgsExtraChange = React.useCallback((event) => {
     const next = Number(event.target.value);
     if (!Number.isFinite(next)) return;
-    const clamped = Math.min(Math.max(next, 0), 25);
+    const clamped = Math.min(Math.max(next, 0), 30);
     setLowKgsExtraPercent(clamped);
   }, []);
   const handleEstimateModeChange = React.useCallback((event) => {
