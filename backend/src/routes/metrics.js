@@ -2,6 +2,10 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 
+const LOW_KGS_THRESHOLD = 300;
+const DEFAULT_LOW_KGS_PERCENT = 100;
+const MAX_LOW_KGS_PERCENT = 500;
+
 const requireAuth = (req, res, next) => {
   if (!req.userId) return res.status(401).json({ error: 'No autenticado' });
   next();
@@ -67,6 +71,22 @@ router.get('/metrics/harvest', requireAuth, requireAdminOrMetrics, async (req, r
       || req.query.municipio
     );
 
+    const lowKgsPercentRaw = req.query.lowKgsPercent
+      || req.query.low_kgs_percent
+      || req.query.lowWeightPercent
+      || req.query.low_weight_percent;
+    const parsedPercent = Number(lowKgsPercentRaw);
+    const normalizedPercent = Number.isFinite(parsedPercent) ? parsedPercent : DEFAULT_LOW_KGS_PERCENT;
+    const clampedPercent = Math.min(Math.max(normalizedPercent, 0), MAX_LOW_KGS_PERCENT);
+    const lowKgsFactor = clampedPercent / 100;
+
+    const makeAdjustedKgsExpr = (params, column = 'pp.kgs') => {
+      if (lowKgsFactor === 1) return column;
+      params.push(lowKgsFactor);
+      const placeholder = `$${params.length}`;
+      return `CASE WHEN ${column} IS NULL THEN 0 WHEN ${column} < ${LOW_KGS_THRESHOLD} THEN ${column} * ${placeholder} ELSE ${column} END`;
+    };
+
     const buildFilterClause = (alias) => {
       const clauses = [];
       const params = [];
@@ -103,13 +123,14 @@ router.get('/metrics/harvest', requireAuth, requireAdminOrMetrics, async (req, r
     const totalOlivos = Number(totalOlivosRow.total) || 0;
 
     const dailyFilter = buildFilterClause('par');
+    const adjustedDailyKgsExpr = makeAdjustedKgsExpr(dailyFilter.params);
     const dailySql = `
       WITH daily_parcelas AS (
         SELECT
           pp.created_at::date AS harvest_date,
           pp.id_parcela,
           COALESCE(par.num_olivos, 0) AS num_olivos,
-          COALESCE(SUM(pp.kgs), 0) AS kgs_parcela
+          COALESCE(SUM(${adjustedDailyKgsExpr}), 0) AS kgs_parcela
         FROM parcelas_palots pp
         JOIN parcelas par ON par.id = pp.id_parcela
         ${dailyFilter.where}
@@ -141,12 +162,13 @@ router.get('/metrics/harvest', requireAuth, requireAdminOrMetrics, async (req, r
     });
 
     const perParcelaFilter = buildFilterClause('par');
+    const adjustedPerParcelaKgsExpr = makeAdjustedKgsExpr(perParcelaFilter.params);
     const perParcelaSql = `
       SELECT
         par.id,
         par.nombre,
         COALESCE(par.num_olivos, 0) AS num_olivos,
-        COALESCE(SUM(pp.kgs), 0) AS total_kgs
+        COALESCE(SUM(${adjustedPerParcelaKgsExpr}), 0) AS total_kgs
       FROM parcelas par
       LEFT JOIN parcelas_palots pp ON pp.id_parcela = par.id
       ${perParcelaFilter.where}
