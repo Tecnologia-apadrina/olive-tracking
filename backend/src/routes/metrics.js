@@ -5,6 +5,8 @@ const db = require('../db');
 const LOW_KGS_THRESHOLD = 300;
 const DEFAULT_LOW_KGS_PERCENT = 100;
 const MAX_LOW_KGS_PERCENT = 500;
+const DEFAULT_EQUAL_KGS_PERCENT = 100;
+const MAX_EQUAL_KGS_PERCENT = 500;
 
 const requireAuth = (req, res, next) => {
   if (!req.userId) return res.status(401).json({ error: 'No autenticado' });
@@ -79,12 +81,30 @@ router.get('/metrics/harvest', requireAuth, requireAdminOrMetrics, async (req, r
     const normalizedPercent = Number.isFinite(parsedPercent) ? parsedPercent : DEFAULT_LOW_KGS_PERCENT;
     const clampedPercent = Math.min(Math.max(normalizedPercent, 0), MAX_LOW_KGS_PERCENT);
     const lowKgsFactor = clampedPercent / 100;
+    const equalKgsPercentRaw = req.query.equalKgsPercent
+      || req.query.equal_kgs_percent
+      || req.query.equalWeightPercent
+      || req.query.equal_weight_percent;
+    const parsedEqualPercent = Number(equalKgsPercentRaw);
+    const normalizedEqualPercent = Number.isFinite(parsedEqualPercent) ? parsedEqualPercent : DEFAULT_EQUAL_KGS_PERCENT;
+    const clampedEqualPercent = Math.min(Math.max(normalizedEqualPercent, 0), MAX_EQUAL_KGS_PERCENT);
+    const equalKgsFactor = clampedEqualPercent / 100;
 
     const makeAdjustedKgsExpr = (params, column = 'pp.kgs') => {
-      if (lowKgsFactor === 1) return column;
-      params.push(lowKgsFactor);
-      const placeholder = `$${params.length}`;
-      return `CASE WHEN ${column} IS NULL THEN 0 WHEN ${column} < ${LOW_KGS_THRESHOLD} THEN ${column} * ${placeholder} ELSE ${column} END`;
+      const adjustLow = lowKgsFactor !== 1;
+      const adjustEqual = equalKgsFactor !== 1;
+      if (!adjustLow && !adjustEqual) return column;
+      const cases = [`WHEN ${column} IS NULL THEN 0`];
+      if (adjustLow) {
+        params.push(lowKgsFactor);
+        cases.push(`WHEN ${column} < ${LOW_KGS_THRESHOLD} THEN ${column} * $${params.length}`);
+      }
+      if (adjustEqual) {
+        params.push(equalKgsFactor);
+        cases.push(`WHEN ${column} = ${LOW_KGS_THRESHOLD} THEN ${column} * $${params.length}`);
+      }
+      cases.push(`ELSE ${column}`);
+      return `CASE ${cases.join(' ')} END`;
     };
 
     const buildFilterClause = (alias) => {

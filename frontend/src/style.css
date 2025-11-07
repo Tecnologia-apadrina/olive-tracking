@@ -507,6 +507,25 @@ textarea:focus {
   padding: 0.4rem 0.6rem;
 }
 
+.metrics-adjustment-subgroup {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 200px;
+}
+
+.metrics-adjustment-subcontrol {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.metrics-adjustment-subtitle {
+  font-weight: 500;
+  font-size: 0.9rem;
+}
+
 .metrics-adjustment-hint {
   margin: 0;
   font-size: 0.9rem;

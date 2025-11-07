@@ -24,6 +24,7 @@ import { syncAll, syncDown, syncUp } from './offline/sync';
 const DEFAULT_CEDENTE_KGS = 300;
 const LOW_KGS_THRESHOLD = 300;
 const LOW_KGS_EXTRA_OPTIONS = [0, 5, 10, 15, 20, 25, 30];
+const EQUAL_300_EXTRA_OPTIONS = [0, 3, 5, 7, 9, 11];
 const toStringSafe = (value) => String(value === undefined || value === null ? '' : value);
 const coalesce = (value, fallback) => (value === undefined || value === null ? fallback : value);
 const toTagIds = (list) => {
@@ -2186,6 +2187,7 @@ function MetricsView({ apiBase, authHeaders }) {
   const [resumenTotales, setResumenTotales] = React.useState({ parcelas: 0, olivos: 0, kgs: 0, avgOlivos: 0, avgKgsPorOlivo: 0 });
   const [metricsTab, setMetricsTab] = React.useState('daily'); // daily | perParcel | estimates
   const [lowKgsExtraPercent, setLowKgsExtraPercent] = React.useState(10);
+  const [equal300ExtraPercent, setEqual300ExtraPercent] = React.useState(0);
   const [perParcelaSort, setPerParcelaSort] = React.useState({ column: 'nombre', direction: 'asc' });
   const [estimateMode, setEstimateMode] = React.useState('kgs'); // kgs | olivos
   const [estimateExtraPercent, setEstimateExtraPercent] = React.useState(10);
@@ -2202,6 +2204,7 @@ function MetricsView({ apiBase, authHeaders }) {
   const [municipioSearch, setMunicipioSearch] = React.useState('');
   const isOlivoMode = estimateMode === 'olivos';
   const lowKgsPercent = 100 + lowKgsExtraPercent;
+  const equal300Percent = 100 + equal300ExtraPercent;
 
   const load = React.useCallback(async () => {
     setStatus('loading');
@@ -2216,6 +2219,7 @@ function MetricsView({ apiBase, authHeaders }) {
     if (excludeParajeList.length) queryParams.set('excludeParajes', excludeParajeList.join(','));
     if (municipioList.length) queryParams.set('excludeMunicipios', municipioList.join(','));
     queryParams.set('lowKgsPercent', String(lowKgsPercent));
+    queryParams.set('equalKgsPercent', String(equal300Percent));
     const query = queryParams.toString() ? `?${queryParams.toString()}` : '';
     try {
       const res = await fetch(`${apiBase}/metrics/harvest${query}`, { headers: { ...authHeaders } });
@@ -2351,7 +2355,7 @@ function MetricsView({ apiBase, authHeaders }) {
       setError(err.message || 'No se pudieron cargar las métricas');
       setStatus('error');
     }
-  }, [apiBase, authHeaders, excludedParcelaIds, excludedParajeIds, excludedMunicipios, lowKgsPercent]);
+  }, [apiBase, authHeaders, excludedParcelaIds, excludedParajeIds, excludedMunicipios, lowKgsPercent, equal300Percent]);
 
   React.useEffect(() => {
     load();
@@ -2473,6 +2477,12 @@ function MetricsView({ apiBase, authHeaders }) {
     if (!Number.isFinite(next)) return;
     const clamped = Math.min(Math.max(next, 0), 30);
     setLowKgsExtraPercent(clamped);
+  }, []);
+  const handleEqual300ExtraChange = React.useCallback((event) => {
+    const next = Number(event.target.value);
+    if (!Number.isFinite(next)) return;
+    const clamped = Math.min(Math.max(next, 0), 11);
+    setEqual300ExtraPercent(clamped);
   }, []);
   const handleEstimateModeChange = React.useCallback((event) => {
     setEstimateMode(event.target.value);
@@ -2710,22 +2720,45 @@ function MetricsView({ apiBase, authHeaders }) {
               Ajustar relaciones con menos de {LOW_KGS_THRESHOLD} kgs
             </label>
             <div className="metrics-adjustment-control">
-              <select
-                id="metrics-low-kgs-select"
-                className="metrics-adjustment-select"
-                value={String(lowKgsExtraPercent)}
-                onChange={handleLowKgsExtraChange}
-              >
-                {LOW_KGS_EXTRA_OPTIONS.map((extra) => (
-                  <option key={extra} value={extra}>+{extra}%</option>
-                ))}
-              </select>
-              <span className="pill pill-info">
-                Aplicando +{formatNumber(lowKgsExtraPercent, 0)}% ({formatNumber(lowKgsPercent, 0)}% total)
-              </span>
+              <div className="metrics-adjustment-subgroup">
+                <label htmlFor="metrics-low-kgs-select" className="metrics-adjustment-subtitle">Relaciones &lt; {LOW_KGS_THRESHOLD} kgs</label>
+                <div className="metrics-adjustment-subcontrol">
+                  <select
+                    id="metrics-low-kgs-select"
+                    className="metrics-adjustment-select"
+                    value={String(lowKgsExtraPercent)}
+                    onChange={handleLowKgsExtraChange}
+                  >
+                    {LOW_KGS_EXTRA_OPTIONS.map((extra) => (
+                      <option key={extra} value={extra}>+{extra}%</option>
+                    ))}
+                  </select>
+                  <span className="pill pill-info">
+                    Aplicando +{formatNumber(lowKgsExtraPercent, 0)}% ({formatNumber(lowKgsPercent, 0)}% total)
+                  </span>
+                </div>
+              </div>
+              <div className="metrics-adjustment-subgroup">
+                <label htmlFor="metrics-equal-kgs-select" className="metrics-adjustment-subtitle">Relaciones = {LOW_KGS_THRESHOLD} kgs</label>
+                <div className="metrics-adjustment-subcontrol">
+                  <select
+                    id="metrics-equal-kgs-select"
+                    className="metrics-adjustment-select"
+                    value={String(equal300ExtraPercent)}
+                    onChange={handleEqual300ExtraChange}
+                  >
+                    {EQUAL_300_EXTRA_OPTIONS.map((extra) => (
+                      <option key={extra} value={extra}>+{extra}%</option>
+                    ))}
+                  </select>
+                  <span className="pill pill-info">
+                    Aplicando +{formatNumber(equal300ExtraPercent, 0)}% ({formatNumber(equal300Percent, 0)}% total)
+                  </span>
+                </div>
+              </div>
             </div>
             <p className="muted metrics-adjustment-hint">
-              Este ajuste suma el porcentaje seleccionado a los kgs registrados en relaciones parcela-palot con menos de {LOW_KGS_THRESHOLD} kgs antes de recalcular todas las métricas y estimaciones.
+              Estos ajustes suman los porcentajes seleccionados a los kgs registrados en relaciones parcela-palot con menos o exactamente {LOW_KGS_THRESHOLD} kgs antes de recalcular todas las métricas y estimaciones.
             </p>
           </div>
           <div className="metrics-filter-section">
