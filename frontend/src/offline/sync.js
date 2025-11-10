@@ -4,6 +4,7 @@ import {
   removePendingOp,
   replacePalotPlaceholder,
   replaceRelationPlaceholder,
+  replaceActivityPlaceholder,
 } from './db';
 
 function buildHeaders(authHeaders = {}, extra = {}) {
@@ -109,6 +110,36 @@ export async function syncUp(apiBase, authHeaders) {
         }),
       });
       await replaceRelationPlaceholder(parcela_id, palot_codigo, createdRelation);
+      await removePendingOp(op.id);
+      processed.push(op.id);
+      continue;
+    }
+    if (op.type === 'createActivity') {
+      const payload = op.payload || {};
+      const { parcela_id, olivo_id, activity_type_id, personas, notas, localKey } = payload;
+      if (!activity_type_id || !olivo_id) {
+        await removePendingOp(op.id);
+        processed.push(op.id);
+        continue;
+      }
+      const body = {
+        activity_type_id,
+        olivo_id,
+      };
+      if (parcela_id) body.parcela_id = parcela_id;
+      const personasNum = Number(personas);
+      if (Number.isFinite(personasNum) && personasNum > 0) {
+        body.personas = personasNum;
+      }
+      if (notas != null) {
+        body.notas = notas;
+      }
+      const createdActivity = await fetchJson(`${apiBase}/activities`, {
+        method: 'POST',
+        headers: buildHeaders(authHeaders, { 'Content-Type': 'application/json' }),
+        body: JSON.stringify(body),
+      });
+      await replaceActivityPlaceholder(localKey, createdActivity);
       await removePendingOp(op.id);
       processed.push(op.id);
       continue;

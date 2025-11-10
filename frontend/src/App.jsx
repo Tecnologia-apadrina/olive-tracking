@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   initOfflineStore,
   saveAuthSession,
@@ -18,6 +18,17 @@ import {
   upsertEtiquetaLocal,
   removeEtiquetaLocal,
   setParcelaEtiquetasLocal,
+  listActivityTypes,
+  listActivities,
+  enqueueActivity,
+  upsertActivityLocal,
+  upsertActivityTypeLocal,
+  removeActivityTypeLocal,
+  updatePendingRelationLocal,
+  removePendingRelationLocal,
+  updatePendingActivityLocal,
+  removePendingActivityLocal,
+  removeActivityLocal,
 } from './offline/db';
 import { syncAll, syncDown, syncUp } from './offline/sync';
 
@@ -45,6 +56,27 @@ const normalizeRole = (role) => {
   return mapped === 'metricas' ? 'metricas' : mapped;
 };
 
+const dateKeyLocal = (dt) => {
+  if (!dt) return 'sin-fecha';
+  const d = new Date(dt);
+  if (Number.isNaN(d.getTime())) return 'sin-fecha';
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
+const formatDayHeadingLabel = (dayKey) => {
+  if (!dayKey || dayKey === 'sin-fecha') return 'Sin fecha';
+  const parts = dayKey.split('-');
+  if (parts.length !== 3) return dayKey;
+  const [y, m, d] = parts.map(Number);
+  const dateObj = new Date(y, (m || 1) - 1, d || 1);
+  if (Number.isNaN(dateObj.getTime())) return dayKey;
+  const formatted = dateObj.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  return formatted ? formatted.charAt(0).toUpperCase() + formatted.slice(1) : dayKey;
+};
+
 function App() {
   // Auth
   const [authUser, setAuthUser] = useState('');
@@ -68,6 +100,7 @@ function App() {
   const [allRels, setAllRels] = useState([]);
   const [allStatus, setAllStatus] = useState('idle'); // idle | loading | ready | error
   const [relationsRefreshing, setRelationsRefreshing] = useState(false);
+  const [adminMenuOpen, setAdminMenuOpen] = useState(false);
   const [filterPalot, setFilterPalot] = useState('');
   const [expandedId, setExpandedId] = useState(null);
   const [relPalots, setRelPalots] = useState([]);
@@ -99,11 +132,25 @@ function App() {
   const [tagCreateStatus, setTagCreateStatus] = useState('idle');
   const [tagCreateError, setTagCreateError] = useState('');
   const [tagDeleteStatus, setTagDeleteStatus] = useState({});
+  const [activityTypes, setActivityTypes] = useState([]);
+  const [activitiesFeed, setActivitiesFeed] = useState([]);
   const syncingRef = useRef(false);
   const syncTimeoutRef = useRef(null);
   const relationsRefreshCounter = useRef(0);
   const authRoleRef = useRef('');
   authRoleRef.current = authRole;
+  const refreshActivitiesOnly = useCallback(async () => {
+    try {
+      const [typesList, activitiesList] = await Promise.all([
+        listActivityTypes().catch(() => []),
+        listActivities().catch(() => []),
+      ]);
+      if (Array.isArray(typesList)) setActivityTypes(typesList);
+      if (Array.isArray(activitiesList)) setActivitiesFeed(activitiesList);
+    } catch (_) {
+      // ignore offline cache refresh errors
+    }
+  }, []);
   useEffect(() => {
     let cancelled = false;
 
@@ -133,11 +180,17 @@ function App() {
         }
         const last = await getLastSnapshotIso();
         if (!cancelled && last) setLastSync(last);
-        const pending = await getPendingOps().catch(() => []);
-        const tagsList = await listEtiquetas().catch(() => []);
+        const [pending, tagsList, typesList, activitiesList] = await Promise.all([
+          getPendingOps().catch(() => []),
+          listEtiquetas().catch(() => []),
+          listActivityTypes().catch(() => []),
+          listActivities().catch(() => []),
+        ]);
         if (!cancelled) {
-          setPendingCount(pending.length);
+          setPendingCount(Array.isArray(pending) ? pending.length : 0);
           setAvailableTags(Array.isArray(tagsList) ? tagsList : []);
+          setActivityTypes(Array.isArray(typesList) ? typesList : []);
+          setActivitiesFeed(Array.isArray(activitiesList) ? activitiesList : []);
         }
       } catch (_) {}
       if (cancelled) return;
@@ -308,6 +361,10 @@ function App() {
     switch (path) {
       case '/users':
         return 'users';
+      case '/actividades':
+        return 'actividades';
+      case '/tipos-actividad':
+        return (authRoleRef.current === 'admin' || authRoleRef.current === 'metricas') ? 'tipos-actividad' : 'main';
       case '/olivos':
         return 'olivos';
       case '/parcelas':
@@ -334,6 +391,11 @@ function App() {
       // Fallback: update state only
       setView(nextView);
     }
+  };
+  const handleNav = (path) => {
+    navigate(path);
+    setMenuOpen(false);
+    setAdminMenuOpen(false);
   };
 
   // Debounced lookup for olivo -> parcela
@@ -479,6 +541,7 @@ function App() {
         setAvailableTags(tagsList);
       }
       setPendingCount(Array.isArray(pending) ? pending.length : 0);
+      await refreshActivitiesOnly();
       return rows;
     } finally {
       endRelationsRefresh();
@@ -580,6 +643,17 @@ function App() {
   const handleDeleteRelation = async (relation) => {
     if (!relation) return;
     if (!window.confirm('¿Eliminar la relación parcela-palot?')) return;
+    const relationKey = relation.key || getRelationKey(relation);
+    if (relation.pending && relationKey) {
+      const removed = await removePendingRelationLocal(relationKey);
+      if (removed) {
+        await refreshAllData();
+        setSyncMessage('Relación pendiente eliminada.');
+        if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
+        syncTimeoutRef.current = setTimeout(() => setSyncMessage(''), 2500);
+      }
+      return;
+    }
     if (!isOnline) {
       setSyncMessage('Sin conexión. No se puede eliminar la relación.');
       if (syncTimeoutRef.current) {
@@ -1035,13 +1109,6 @@ function App() {
   // Tabs for relations: today | previous
   const [relTab, setRelTab] = useState('today');
 
-  const dateKeyLocal = (dt) => {
-    const d = new Date(dt);
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
-    };
   const todayKey = dateKeyLocal(new Date());
 
   useEffect(() => {
@@ -1091,16 +1158,7 @@ function App() {
     return `code:${toStringSafe(palotCodigo)}`;
   };
 
-  const formatDayHeading = React.useCallback((dayKey) => {
-    if (!dayKey || dayKey === 'sin-fecha') return 'Sin fecha';
-    const parts = dayKey.split('-');
-    if (parts.length !== 3) return dayKey;
-    const [y, m, d] = parts.map(Number);
-    const dateObj = new Date(y, (m || 1) - 1, d || 1);
-    if (Number.isNaN(dateObj.getTime())) return dayKey;
-    const formatted = dateObj.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-    return formatted ? formatted.charAt(0).toUpperCase() + formatted.slice(1) : dayKey;
-  }, []);
+  const formatDayHeading = React.useCallback((dayKey) => formatDayHeadingLabel(dayKey), []);
 
   const buildPalotGroups = React.useCallback((base) => {
     const map = new Map(); // palot_id -> { palot_id, palot_codigo, items: [], hasPct: boolean, latestCreatedAt: number }
@@ -1256,7 +1314,9 @@ function App() {
     const newVal = parsed.value;
     const nextDraftValue = String(parsed.value);
     const numericId = Number(relation && relation.id);
-    if (Number.isNaN(numericId)) return;
+    const hasServerId = !Number.isNaN(numericId) && !relation?.pending;
+    const relationKey = relation && (relation.key || getRelationKey(relation));
+    if (!hasServerId && !relation?.pending) return;
 
     const existingVal = relation && relation.kgs != null ? Number(relation.kgs) : null;
     if (existingVal !== null && existingVal === newVal) {
@@ -1267,6 +1327,15 @@ function App() {
 
     setKgSaveStatus((s) => ({ ...s, [relKey]: 'saving' }));
     try {
+      if (relation && relation.pending && relationKey) {
+        await updatePendingRelationLocal(relationKey, { kgs: newVal });
+        setKgsDraft((s) => ({ ...s, [relKey]: nextDraftValue }));
+        setKgSaveStatus((s) => ({ ...s, [relKey]: 'ok' }));
+        setAllRels((rows) => rows.map((r) => (r.key === relationKey ? { ...r, kgs: newVal } : r)));
+        setRelPalots((rows) => rows.map((r) => (r.key === relationKey ? { ...r, kgs: newVal } : r)));
+        setTimeout(() => setKgSaveStatus((s) => ({ ...s, [relKey]: 'idle' })), 1200);
+        return;
+      }
       const res = await fetch(`${apiBase}/parcelas-palots/${numericId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', ...authHeaders },
@@ -1291,7 +1360,9 @@ function App() {
     const hasContent = draftValue.trim().length > 0;
     const nextValue = hasContent ? draftValue : null;
     const numericId = Number(relation && relation.id);
-    if (Number.isNaN(numericId)) return;
+    const hasServerId = !Number.isNaN(numericId) && !relation?.pending;
+    const relationKey = relation && (relation.key || getRelationKey(relation));
+    if (!hasServerId && !relation?.pending) return;
 
     const existingRaw = relation && relation.notas != null ? String(relation.notas) : '';
     const existingValue = existingRaw.trim().length === 0 ? null : existingRaw;
@@ -1305,6 +1376,15 @@ function App() {
 
     setNoteSaveStatus((s) => ({ ...s, [relKey]: 'saving' }));
     try {
+      if (relation && relation.pending && relationKey) {
+        await updatePendingRelationLocal(relationKey, { notas: nextValue });
+        setNotesDraft((s) => ({ ...s, [relKey]: nextValue == null ? '' : draftValue }));
+        setAllRels((rows) => rows.map((r) => (r.key === relationKey ? { ...r, notas: nextValue } : r)));
+        setRelPalots((rows) => rows.map((r) => (r.key === relationKey ? { ...r, notas: nextValue } : r)));
+        setNoteSaveStatus((s) => ({ ...s, [relKey]: 'ok' }));
+        setTimeout(() => setNoteSaveStatus((s) => ({ ...s, [relKey]: 'idle' })), 1200);
+        return;
+      }
       const res = await fetch(`${apiBase}/parcelas-palots/${numericId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', ...authHeaders },
@@ -1325,13 +1405,45 @@ function App() {
     if (!relation) return;
     const relationId = Number(relation.id);
     const parcelId = Number(relation.parcela_id);
-    if (!Number.isFinite(relationId) || !Number.isInteger(parcelId)) return;
+    const relationKey = relation.key || getRelationKey(relation);
+    if (!Number.isInteger(parcelId)) return;
     const sanitized = Array.from(new Set((draftIds || []).map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0))).sort((a, b) => a - b);
-    if (!isOnline) {
+    const buildTagList = () => sanitized.map((id) => {
+      const match = (availableTags || []).find((tag) => Number(tag.id) === id);
+      return { id, nombre: match ? match.nombre : '' };
+    });
+    const applyTagState = (tagList, normalizedIds) => {
+      setParcelaTagDrafts((prev) => ({ ...prev, [parcelId]: normalizedIds }));
+      if (parcelaId === parcelId) {
+        setSelectedTagIds(normalizedIds);
+      }
+      const updater = (rows = []) => rows.map((row) => (Number(row.parcela_id) === parcelId
+        ? { ...row, parcela_etiquetas: tagList, parcela_etiqueta_ids: normalizedIds }
+        : row));
+      setAllRels(updater);
+      setRelPalots(updater);
+    };
+    setTagSaveStatus((s) => ({ ...s, [parcelId]: 'saving' }));
+    if (relation.pending && relationKey) {
+      try {
+        const tagList = buildTagList();
+        await setParcelaEtiquetasLocal(parcelId, tagList);
+        await updatePendingRelationLocal(relationKey, { tagEntries: tagList, tagIds: sanitized });
+        const normalizedIds = toTagIds(tagList.length ? tagList : sanitized);
+        applyTagState(tagList, normalizedIds);
+        setTagSaveStatus((s) => ({ ...s, [parcelId]: 'ok' }));
+        setTimeout(() => {
+          setTagSaveStatus((s) => ({ ...s, [parcelId]: 'idle' }));
+        }, 1200);
+      } catch (_) {
+        setTagSaveStatus((s) => ({ ...s, [parcelId]: 'error' }));
+      }
+      return;
+    }
+    if (!isOnline || Number.isNaN(relationId)) {
       setTagSaveStatus((s) => ({ ...s, [parcelId]: 'error' }));
       return;
     }
-    setTagSaveStatus((s) => ({ ...s, [parcelId]: 'saving' }));
     try {
       const res = await fetch(`${apiBase}/parcelas-palots/${relationId}`, {
         method: 'PATCH',
@@ -1342,21 +1454,10 @@ function App() {
       const data = await res.json().catch(() => null);
       const tagList = data && Array.isArray(data.parcela_etiquetas)
         ? data.parcela_etiquetas
-        : sanitized.map((id) => {
-            const match = (availableTags || []).find((tag) => Number(tag.id) === id);
-            return { id, nombre: match ? match.nombre : '' };
-          });
+        : buildTagList();
       await setParcelaEtiquetasLocal(parcelId, tagList);
       const normalizedIds = toTagIds(tagList.length ? tagList : sanitized);
-      setParcelaTagDrafts((prev) => ({ ...prev, [parcelId]: normalizedIds }));
-      if (parcelaId === parcelId) {
-        setSelectedTagIds(normalizedIds);
-      }
-      const updater = (rows = []) => rows.map((row) => (Number(row.parcela_id) === parcelId
-        ? { ...row, parcela_etiquetas: tagList, parcela_etiqueta_ids: normalizedIds }
-        : row));
-      setAllRels(updater);
-      setRelPalots(updater);
+      applyTagState(tagList, normalizedIds);
       setTagSaveStatus((s) => ({ ...s, [parcelId]: 'ok' }));
       setTimeout(() => {
         setTagSaveStatus((s) => ({ ...s, [parcelId]: 'idle' }));
@@ -1561,19 +1662,21 @@ function App() {
             {g.items.map((r) => {
               const relKey = getRelationKey(r);
               const hasPct = r.parcela_porcentaje != null && Number(r.parcela_porcentaje) > 0;
-              const canEditKg = !r.pending && !Number.isNaN(Number(r?.id));
+              const relationStoreKey = r.key || relKey;
+              const hasServerId = !r.pending && Number.isFinite(Number(r?.id));
+              const canEditKg = Boolean(relationStoreKey) && (r.pending || hasServerId);
               const draftValue = kgsDraft[relKey] ?? (r.kgs == null ? '' : String(r.kgs));
               const status = kgSaveStatus[relKey];
               const noteDraftValue = toStringSafe(coalesce(notesDraft[relKey], r.notas == null ? '' : String(r.notas)));
               const noteStatus = noteSaveStatus[relKey];
-              const canEditNotes = !r.pending && !Number.isNaN(Number(r?.id));
+              const canEditNotes = Boolean(relationStoreKey) && (r.pending || hasServerId);
               const parcelId = Number(r.parcela_id);
               const baseTagDraft = Array.isArray(parcelaTagDrafts[parcelId])
                 ? parcelaTagDrafts[parcelId]
                 : toTagIds(r.parcela_etiquetas || r.parcela_etiqueta_ids);
               const normalizedTagDraft = Array.from(new Set(baseTagDraft)).sort((a, b) => a - b);
               const tagStatus = coalesce(tagSaveStatus[parcelId], 'idle');
-              const canEditTags = !r.pending && Number.isFinite(Number(r?.id));
+              const canEditTags = Boolean(relationStoreKey) && (r.pending || Number.isFinite(Number(r?.id)));
               const relationTagDetails = Array.isArray(r.parcela_etiquetas) ? r.parcela_etiquetas : [];
               const tagEntries = relationTagDetails.length > 0
                 ? relationTagDetails.map((tag) => {
@@ -1707,7 +1810,7 @@ function App() {
                   <button
                     className="cell-close"
                     onClick={(event) => { event.stopPropagation(); handleDeleteRelation(r); }}
-                    disabled={!isOnline || syncing}
+                    disabled={(!isOnline && !r.pending) || syncing}
                     aria-label="Eliminar relación"
                   >
                     ×
@@ -1765,7 +1868,10 @@ function App() {
             <span className="muted" style={{ fontSize: '0.85rem', display: 'block' }}>
               Versión: {appVersion || 'cargando…'}
             </span>
-            {dbUrl && (
+            <span className="muted" style={{ fontSize: '0.85rem', display: 'block' }}>
+              Usuario: {authUser || '—'} · Rol: {authRole || '—'}
+            </span>
+            {authRole === 'admin' && dbUrl && (
               <span className="muted" style={{ fontSize: '0.85rem', display: 'block' }}>
                 DB: {dbUrl}
               </span>
@@ -1783,39 +1889,54 @@ function App() {
             <a
               className={`btn ${view === 'main' ? '' : 'btn-outline'} mobile-app-link`}
               href="/"
-              onClick={(e) => { e.preventDefault(); navigate('/'); setMenuOpen(false); }}
+              onClick={(e) => { e.preventDefault(); handleNav('/'); }}
             >
-              App
+              Trazoliva
             </a>
-            <button className="hamburger" aria-label="Abrir menú" aria-expanded={menuOpen} onClick={() => setMenuOpen(o => !o)}>
+            <button className="hamburger" aria-label="Abrir menú" aria-expanded={menuOpen} onClick={() => setMenuOpen((prev) => {
+              const next = !prev;
+              if (!next) setAdminMenuOpen(false);
+              return next;
+            })}>
               ☰
             </button>
             <div className={`header-nav ${menuOpen ? 'open' : ''}`}>
-              <span className="pill">Sesión: {authUser}</span>
-              {authRole && <span className="pill">Rol: {authRole}</span>}
-              <a className={`btn ${view === 'main' ? '' : 'btn-outline'} header-app-link`} href="/" onClick={(e) => { e.preventDefault(); navigate('/'); setMenuOpen(false); }}>App</a>
-              {authRole === 'admin' && (
-                <a className={`btn ${view === 'users' ? '' : 'btn-outline'}`} href="/users" onClick={(e) => { e.preventDefault(); navigate('/users'); setMenuOpen(false); }}>Usuarios</a>
-              )}
-              {authRole === 'admin' && (
-                <a className={`btn ${view === 'olivos' ? '' : 'btn-outline'}`} href="/olivos" onClick={(e) => { e.preventDefault(); navigate('/olivos'); setMenuOpen(false); }}>Olivos</a>
-              )}
-              {authRole === 'admin' && (
-                <a className={`btn ${view === 'parcelas' ? '' : 'btn-outline'}`} href="/parcelas" onClick={(e) => { e.preventDefault(); navigate('/parcelas'); setMenuOpen(false); }}>Parcelas</a>
-              )}
-              {authRole === 'admin' && (
-                <a className={`btn ${view === 'parajes' ? '' : 'btn-outline'}`} href="/parajes" onClick={(e) => { e.preventDefault(); navigate('/parajes'); setMenuOpen(false); }}>Parajes</a>
-              )}
-              {authRole === 'admin' && (
-                <a className={`btn ${view === 'palots' ? '' : 'btn-outline'}`} href="/palots" onClick={(e) => { e.preventDefault(); navigate('/palots'); setMenuOpen(false); }}>Palots</a>
-              )}
-              {authRole === 'admin' && (
-                <a className={`btn ${view === 'etiquetas' ? '' : 'btn-outline'}`} href="/etiquetas" onClick={(e) => { e.preventDefault(); navigate('/etiquetas'); setMenuOpen(false); }}>Etiquetas</a>
-              )}
+              <div className="header-links">
+                <a className={`btn ${view === 'main' ? '' : 'btn-outline'} header-app-link`} href="/" onClick={(e) => { e.preventDefault(); handleNav('/'); }}>Trazoliva</a>
+                {authRole === 'admin' && (
+                  <a className={`btn ${view === 'actividades' ? '' : 'btn-outline'}`} href="/actividades" onClick={(e) => { e.preventDefault(); handleNav('/actividades'); }}>Actividades</a>
+                )}
+                {(authRole === 'admin' || authRole === 'metricas') && (
+                  <a className={`btn ${view === 'metrics' ? '' : 'btn-outline'}`} href="/metrics" onClick={(e) => { e.preventDefault(); handleNav('/metrics'); }}>Métricas</a>
+                )}
+              </div>
               {(authRole === 'admin' || authRole === 'metricas') && (
-                <a className={`btn ${view === 'metrics' ? '' : 'btn-outline'}`} href="/metrics" onClick={(e) => { e.preventDefault(); navigate('/metrics'); setMenuOpen(false); }}>Métricas</a>
+                <div className="admin-menu">
+                  <button
+                    type="button"
+                    className="btn btn-outline admin-menu-toggle"
+                    onClick={() => setAdminMenuOpen((prev) => !prev)}
+                    aria-expanded={adminMenuOpen}
+                  >
+                    Admin ▾
+                  </button>
+                  {adminMenuOpen && (
+                    <div className="admin-menu-panel">
+                      <a className={`btn ${view === 'tipos-actividad' ? '' : 'btn-outline'}`} href="/tipos-actividad" onClick={(e) => { e.preventDefault(); handleNav('/tipos-actividad'); }}>Tipos de actividad</a>
+                      {authRole === 'admin' && (
+                        <>
+                          <a className={`btn ${view === 'users' ? '' : 'btn-outline'}`} href="/users" onClick={(e) => { e.preventDefault(); handleNav('/users'); }}>Usuarios</a>
+                          <a className={`btn ${view === 'parcelas' ? '' : 'btn-outline'}`} href="/parcelas" onClick={(e) => { e.preventDefault(); handleNav('/parcelas'); }}>Parcelas</a>
+                          <a className={`btn ${view === 'parajes' ? '' : 'btn-outline'}`} href="/parajes" onClick={(e) => { e.preventDefault(); handleNav('/parajes'); }}>Parajes</a>
+                          <a className={`btn ${view === 'palots' ? '' : 'btn-outline'}`} href="/palots" onClick={(e) => { e.preventDefault(); handleNav('/palots'); }}>Palots</a>
+                          <a className={`btn ${view === 'etiquetas' ? '' : 'btn-outline'}`} href="/etiquetas" onClick={(e) => { e.preventDefault(); handleNav('/etiquetas'); }}>Etiquetas</a>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
               )}
-              <button className="btn btn-outline" onClick={() => { clearToken(); setMenuOpen(false); }}>Salir</button>
+              <button className="btn btn-outline" onClick={() => { clearToken(); setMenuOpen(false); setAdminMenuOpen(false); }}>Salir</button>
             </div>
           </div>
 
@@ -2068,7 +2189,10 @@ function App() {
         <span className="muted" style={{ fontSize: '0.85rem', display: 'block' }}>
           Versión: {appVersion || 'cargando…'}
         </span>
-        {dbUrl && (
+        <span className="muted" style={{ fontSize: '0.85rem', display: 'block' }}>
+          Usuario: {authUser || '—'} · Rol: {authRole || '—'}
+        </span>
+        {authRole === 'admin' && dbUrl && (
           <span className="muted" style={{ fontSize: '0.85rem', display: 'block' }}>
             DB: {dbUrl}
           </span>
@@ -2078,7 +2202,40 @@ function App() {
     )}
 
       {authToken && view === 'users' && (
-        <UsersView apiBase={apiBase} authHeaders={authHeaders} appVersion={appVersion} dbUrl={dbUrl} />
+        <UsersView
+          apiBase={apiBase}
+          authHeaders={authHeaders}
+          appVersion={appVersion}
+          dbUrl={dbUrl}
+          authUser={authUser}
+          authRole={authRole}
+        />
+      )}
+
+      {authToken && view === 'actividades' && (
+        <ActivitiesView
+          apiBase={apiBase}
+          authHeaders={authHeaders}
+          isOnline={isOnline}
+          activityTypes={activityTypes}
+          activities={activitiesFeed}
+          authUser={authUser}
+          authRole={authRole}
+          refreshActivities={refreshActivitiesOnly}
+          refreshAll={refreshAllData}
+          formatDateTime={formatDateTime}
+          formatDayHeading={formatDayHeading}
+        />
+      )}
+
+      {authToken && (authRole === 'admin' || authRole === 'metricas') && view === 'tipos-actividad' && (
+        <ActivityTypesView
+          apiBase={apiBase}
+          authHeaders={authHeaders}
+          activityTypes={activityTypes}
+          isOnline={isOnline}
+          refreshActivities={refreshActivitiesOnly}
+        />
       )}
 
 
@@ -2172,6 +2329,1035 @@ function App() {
         <MetricsView apiBase={apiBase} authHeaders={authHeaders} />
       )}
         </>
+      )}
+    </div>
+  );
+}
+
+function ActivitiesView({
+  apiBase,
+  authHeaders,
+  isOnline,
+  activityTypes,
+  activities,
+  authUser,
+  authRole,
+  refreshActivities,
+  refreshAll,
+  formatDateTime,
+  formatDayHeading,
+}) {
+  const [olivoValue, setOlivoValue] = React.useState('');
+  const [parcelaInfo, setParcelaInfo] = React.useState(null);
+  const [lookupStatus, setLookupStatus] = React.useState('idle'); // idle | waiting | loading | success | error
+  const [lookupError, setLookupError] = React.useState('');
+  const [selectedTypeId, setSelectedTypeId] = React.useState('');
+  const [personasInput, setPersonasInput] = React.useState('1');
+  const [notasInput, setNotasInput] = React.useState('');
+  const [saveStatus, setSaveStatus] = React.useState('idle');
+  const [saveMessage, setSaveMessage] = React.useState('');
+  const lookupTimeoutRef = React.useRef(null);
+  const [activitiesTab, setActivitiesTab] = React.useState('today');
+  const [exportTypeFilter, setExportTypeFilter] = React.useState('all');
+  const formatDayHeadingFn = formatDayHeading || formatDayHeadingLabel;
+  const safeActivities = Array.isArray(activities) ? activities : [];
+  const todayKey = dateKeyLocal(new Date());
+  const [editingActivityKey, setEditingActivityKey] = React.useState(null);
+  const [activityDrafts, setActivityDrafts] = React.useState({});
+  const [activityEditStatus, setActivityEditStatus] = React.useState({});
+  const [activityEditMessage, setActivityEditMessage] = React.useState({});
+  const [activityDeleteStatus, setActivityDeleteStatus] = React.useState({});
+  const [activityDeleteMessage, setActivityDeleteMessage] = React.useState({});
+  const getActivityKey = React.useCallback((activity) => {
+    if (!activity) return null;
+    if (activity.key) return activity.key;
+    if (activity.id != null) return `srv-${activity.id}`;
+    return null;
+  }, []);
+
+  const activitiesPartition = React.useMemo(() => {
+    const today = [];
+    const previous = [];
+    for (const activity of safeActivities) {
+      const key = activity && activity.created_at ? dateKeyLocal(activity.created_at) : null;
+      if (key === todayKey) {
+        today.push(activity);
+      } else {
+        previous.push(activity);
+      }
+    }
+    return { today, previous };
+  }, [safeActivities, todayKey]);
+
+  const buildActivityDayGroups = React.useCallback((list) => {
+    if (!Array.isArray(list) || list.length === 0) return [];
+    const map = new Map();
+    const toTimestamp = (key) => {
+      if (!key || key === 'sin-fecha') return 0;
+      const ts = new Date(`${key}T00:00:00Z`).getTime();
+      return Number.isNaN(ts) ? 0 : ts;
+    };
+    for (const activity of list) {
+      const key = activity && activity.created_at ? dateKeyLocal(activity.created_at) : 'sin-fecha';
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(activity);
+    }
+    return Array.from(map.entries())
+      .map(([dayKey, items]) => {
+        const typeCounts = new Map();
+        items.forEach((item) => {
+          const typeName = item.activity_type_nombre || 'Actividad';
+          typeCounts.set(typeName, (typeCounts.get(typeName) || 0) + 1);
+        });
+        const summary = Array.from(typeCounts.entries())
+          .map(([name, count]) => (count > 1 ? `${name} (${count})` : name))
+          .join(', ');
+        return {
+          dayKey,
+          displayDate: formatDayHeadingFn(dayKey),
+          typeSummary: summary,
+          items: items
+            .slice()
+            .sort((a, b) => {
+              const at = a.created_at ? new Date(a.created_at).getTime() : 0;
+              const bt = b.created_at ? new Date(b.created_at).getTime() : 0;
+              return bt - at;
+            }),
+          timestamp: toTimestamp(dayKey),
+        };
+      })
+      .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
+      .map(({ timestamp, ...rest }) => rest);
+  }, [formatDayHeadingFn]);
+
+  const activitiesTodayGroups = React.useMemo(
+    () => buildActivityDayGroups(activitiesPartition.today),
+    [activitiesPartition, buildActivityDayGroups],
+  );
+  const activitiesPreviousGroups = React.useMemo(
+    () => buildActivityDayGroups(activitiesPartition.previous),
+    [activitiesPartition, buildActivityDayGroups],
+  );
+  const activeActivityGroups = activitiesTab === 'today' ? activitiesTodayGroups : activitiesPreviousGroups;
+
+  const filteredActivitiesForExport = React.useMemo(() => {
+    if (exportTypeFilter === 'all') return safeActivities;
+    return safeActivities.filter((activity) => String(activity.activity_type_id) === String(exportTypeFilter));
+  }, [safeActivities, exportTypeFilter]);
+
+  React.useEffect(() => {
+    if (!editingActivityKey) return;
+    const exists = safeActivities.some((activity) => getActivityKey(activity) === editingActivityKey);
+    if (!exists) setEditingActivityKey(null);
+  }, [safeActivities, editingActivityKey, getActivityKey]);
+
+  React.useEffect(() => {
+    if (!activityTypes || activityTypes.length === 0) {
+      setSelectedTypeId('');
+      return;
+    }
+    setSelectedTypeId((current) => {
+      const exists = activityTypes.find((type) => String(type.id) === String(current));
+      return exists ? current : String(activityTypes[0].id);
+    });
+  }, [activityTypes]);
+
+  const buildActivityDraft = (activity) => ({
+    typeId: String(activity.activity_type_id || ''),
+    personas: String(activity.personas != null ? activity.personas : 1),
+    notas: activity.notas || '',
+  });
+
+  const startEditActivity = (activity) => {
+    const key = getActivityKey(activity);
+    if (!key) return;
+    setEditingActivityKey(key);
+    setActivityDrafts((prev) => ({
+      ...prev,
+      [key]: buildActivityDraft(activity),
+    }));
+    setActivityEditStatus((prev) => ({ ...prev, [key]: 'idle' }));
+    setActivityEditMessage((prev) => ({ ...prev, [key]: '' }));
+  };
+
+  const cancelActivityEdit = () => {
+    if (editingActivityKey) {
+      setActivityEditStatus((prev) => ({ ...prev, [editingActivityKey]: 'idle' }));
+      setActivityEditMessage((prev) => ({ ...prev, [editingActivityKey]: '' }));
+    }
+    setEditingActivityKey(null);
+  };
+
+  const handleActivityDraftChange = (key, field, value) => {
+    setActivityDrafts((prev) => ({
+      ...prev,
+      [key]: {
+        ...prev[key],
+        [field]: value,
+      },
+    }));
+  };
+
+  const handleSaveActivityEdit = async (activity) => {
+    const activityKey = getActivityKey(activity);
+    if (!activityKey) return;
+    const draft = activityDrafts[activityKey] || buildActivityDraft(activity);
+    const originalTypeId = String(activity.activity_type_id || '');
+    const draftTypeId = String(draft.typeId || '');
+    if (!draftTypeId) {
+      setActivityEditStatus((prev) => ({ ...prev, [activityKey]: 'error' }));
+      setActivityEditMessage((prev) => ({ ...prev, [activityKey]: 'Selecciona un tipo' }));
+      return;
+    }
+    const personasNum = Math.max(1, Number.parseInt(draft.personas, 10) || 1);
+    const notasValue = typeof draft.notas === 'string' ? draft.notas : '';
+    const trimmedNotes = notasValue.trim();
+    const normalizedNotes = trimmedNotes.length ? trimmedNotes : '';
+    const typeChanged = draftTypeId !== originalTypeId;
+    const personasChanged = personasNum !== (Number(activity.personas) || 0);
+    const notasChanged = (activity.notas || '').trim() !== normalizedNotes;
+    if (!typeChanged && !personasChanged && !notasChanged) {
+      setActivityEditStatus((prev) => ({ ...prev, [activityKey]: 'idle' }));
+      setActivityEditMessage((prev) => ({ ...prev, [activityKey]: 'Sin cambios' }));
+      setTimeout(() => {
+        setActivityEditMessage((prev) => ({ ...prev, [activityKey]: '' }));
+      }, 1500);
+      return;
+    }
+    if (!activity.pending && !isOnline) {
+      setActivityEditStatus((prev) => ({ ...prev, [activityKey]: 'error' }));
+      setActivityEditMessage((prev) => ({ ...prev, [activityKey]: 'Sin conexión. Conéctate para editar.' }));
+      return;
+    }
+    setActivityEditStatus((prev) => ({ ...prev, [activityKey]: 'saving' }));
+    setActivityEditMessage((prev) => ({ ...prev, [activityKey]: '' }));
+    try {
+      if (activity.pending) {
+        const selectedType = activityTypes.find((type) => String(type.id) === draftTypeId);
+        await updatePendingActivityLocal(activityKey, {
+          activity_type_id: Number(draftTypeId),
+          activity_type_nombre: selectedType ? selectedType.nombre : activity.activity_type_nombre,
+          activity_type_icono: selectedType ? selectedType.icono : activity.activity_type_icono,
+          personas: personasNum,
+          notas: normalizedNotes,
+        });
+        await refreshActivities();
+      } else {
+        const payload = {};
+        if (typeChanged) payload.activity_type_id = Number(draftTypeId);
+        if (personasChanged) payload.personas = personasNum;
+        if (notasChanged) payload.notas = normalizedNotes.length ? normalizedNotes : null;
+        const res = await fetch(`${apiBase}/activities/${activity.id}`, {
+          method: 'PATCH',
+          headers: { ...authHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (res.status === 401) throw new Error('No autenticado');
+        if (!res.ok) {
+          const errBody = await res.json().catch(() => ({}));
+          throw new Error(errBody.error || 'No se pudo actualizar la actividad');
+        }
+        const updated = await res.json();
+        await upsertActivityLocal(updated);
+        await refreshActivities();
+      }
+      setActivityEditStatus((prev) => ({ ...prev, [activityKey]: 'ok' }));
+      setActivityEditMessage((prev) => ({ ...prev, [activityKey]: 'Cambios guardados' }));
+      setTimeout(() => {
+        setActivityEditStatus((prev) => ({ ...prev, [activityKey]: 'idle' }));
+        setActivityEditMessage((prev) => ({ ...prev, [activityKey]: '' }));
+      }, 1600);
+      setEditingActivityKey(null);
+    } catch (error) {
+      setActivityEditStatus((prev) => ({ ...prev, [activityKey]: 'error' }));
+      setActivityEditMessage((prev) => ({ ...prev, [activityKey]: error && error.message ? error.message : 'Error al guardar' }));
+    }
+  };
+
+  const handleDeleteActivity = async (activity) => {
+    const activityKey = getActivityKey(activity);
+    if (!activityKey) return;
+    if (!window.confirm('¿Eliminar la actividad seleccionada?')) return;
+    if (!activity.pending && !isOnline) {
+      setActivityDeleteStatus((prev) => ({ ...prev, [activityKey]: 'error' }));
+      setActivityDeleteMessage((prev) => ({ ...prev, [activityKey]: 'Sin conexión. Conéctate para eliminar.' }));
+      return;
+    }
+    setActivityDeleteStatus((prev) => ({ ...prev, [activityKey]: 'saving' }));
+    setActivityDeleteMessage((prev) => ({ ...prev, [activityKey]: '' }));
+    try {
+      if (activity.pending) {
+        await removePendingActivityLocal(activityKey);
+      } else {
+        const res = await fetch(`${apiBase}/activities/${activity.id}`, {
+          method: 'DELETE',
+          headers: { ...authHeaders },
+        });
+        if (res.status === 401) throw new Error('No autenticado');
+        if (res.status === 404) throw new Error('Actividad no encontrada');
+        if (res.status !== 204) {
+          const errBody = await res.json().catch(() => ({}));
+          throw new Error(errBody.error || 'No se pudo eliminar la actividad');
+        }
+        await removeActivityLocal(activityKey);
+      }
+      await refreshActivities();
+      setActivityDeleteStatus((prev) => ({ ...prev, [activityKey]: 'ok' }));
+      setActivityDeleteMessage((prev) => ({ ...prev, [activityKey]: 'Actividad eliminada' }));
+      setTimeout(() => {
+        setActivityDeleteStatus((prev) => ({ ...prev, [activityKey]: 'idle' }));
+        setActivityDeleteMessage((prev) => ({ ...prev, [activityKey]: '' }));
+      }, 1600);
+      if (editingActivityKey === activityKey) {
+        setEditingActivityKey(null);
+      }
+    } catch (error) {
+      setActivityDeleteStatus((prev) => ({ ...prev, [activityKey]: 'error' }));
+      setActivityDeleteMessage((prev) => ({ ...prev, [activityKey]: error && error.message ? error.message : 'Error al eliminar' }));
+    }
+  };
+
+  const resetForm = () => {
+    setOlivoValue('');
+    setParcelaInfo(null);
+    setPersonasInput('1');
+    setNotasInput('');
+    setLookupStatus('idle');
+    setLookupError('');
+  };
+
+  const buildParcelaDisplay = (data) => {
+    if (!data) return null;
+    return {
+      id: data.id,
+      nombre: data.nombre || data.nombre_interno || '',
+      nombre_interno: data.nombre_interno || '',
+      sigpac_municipio: data.sigpac_municipio || '',
+      sigpac_poligono: data.sigpac_poligono || '',
+      sigpac_parcela: data.sigpac_parcela || '',
+      sigpac_recinto: data.sigpac_recinto || '',
+      paraje_nombre: data.paraje_nombre || '',
+    };
+  };
+
+  const handleLookupParcela = React.useCallback(async () => {
+    const trimmed = olivoValue.trim();
+    if (!trimmed) {
+      setParcelaInfo(null);
+      setLookupStatus('idle');
+      setLookupError('');
+      return;
+    }
+    setLookupStatus('loading');
+    setLookupError('');
+    try {
+      let parcela = null;
+      if (isOnline) {
+        try {
+          const res = await fetch(`${apiBase}/olivos/${encodeURIComponent(trimmed)}/parcela`, {
+            headers: { ...authHeaders },
+          });
+          if (res.ok) {
+            parcela = await res.json();
+          }
+        } catch (_) {
+          // ignore network errors and fallback to offline cache
+        }
+      }
+      if (!parcela) {
+        parcela = await offlineGetParcelaByOlivo(trimmed);
+      }
+      if (!parcela) throw new Error('not-found');
+      const enriched = parcela.id ? await getParcelaById(parcela.id).catch(() => null) : null;
+      setParcelaInfo(buildParcelaDisplay(enriched || parcela));
+      setLookupStatus('success');
+    } catch (error) {
+      setParcelaInfo(null);
+      setLookupStatus('error');
+      setLookupError('No se encontró la parcela para ese olivo.');
+    }
+  }, [olivoValue, isOnline, apiBase, authHeaders]);
+
+  React.useEffect(() => {
+    if (lookupTimeoutRef.current) clearTimeout(lookupTimeoutRef.current);
+    if (!olivoValue.trim()) {
+      setParcelaInfo(null);
+      setLookupStatus('idle');
+      setLookupError('');
+      return;
+    }
+    setLookupStatus((prev) => (prev === 'loading' ? 'loading' : 'waiting'));
+    lookupTimeoutRef.current = setTimeout(() => {
+      handleLookupParcela();
+    }, 400);
+    return () => {
+      if (lookupTimeoutRef.current) clearTimeout(lookupTimeoutRef.current);
+    };
+  }, [olivoValue, handleLookupParcela]);
+
+  const handleSaveActivity = async (event) => {
+    event?.preventDefault?.();
+    setSaveMessage('');
+    if (!parcelaInfo || !parcelaInfo.id) {
+      setSaveStatus('error');
+      setSaveMessage('Busca primero un olivo válido.');
+      return;
+    }
+    const selectedType = activityTypes.find((type) => String(type.id) === String(selectedTypeId));
+    if (!selectedType) {
+      setSaveStatus('error');
+      setSaveMessage('Selecciona un tipo de actividad.');
+      return;
+    }
+    const olivoIdNum = Number(olivoValue.trim());
+    if (!Number.isInteger(olivoIdNum) || olivoIdNum <= 0) {
+      setSaveStatus('error');
+      setSaveMessage('Introduce un nº de olivo válido.');
+      return;
+    }
+    const personasNum = Math.max(1, Number.parseInt(personasInput, 10) || 1);
+    const notas = notasInput.trim();
+    const payload = {
+      parcela_id: Number(parcelaInfo.id),
+      parcela_nombre: parcelaInfo.nombre || '',
+      parcela_nombre_interno: parcelaInfo.nombre_interno || '',
+      parcela_paraje_nombre: parcelaInfo.paraje_nombre || '',
+      sigpac_municipio: parcelaInfo.sigpac_municipio || '',
+      sigpac_poligono: parcelaInfo.sigpac_poligono || '',
+      sigpac_parcela: parcelaInfo.sigpac_parcela || '',
+      sigpac_recinto: parcelaInfo.sigpac_recinto || '',
+      activity_type_id: Number(selectedType.id),
+      activity_type_nombre: selectedType.nombre,
+      activity_type_icono: selectedType.icono,
+      olivo_id: olivoIdNum,
+      personas: personasNum,
+      notas,
+      created_by_username: authUser || '',
+    };
+    setSaveStatus('saving');
+    try {
+      if (!isOnline) {
+        await enqueueActivity(payload);
+        await refreshAll();
+        setSaveStatus('offline');
+        setSaveMessage('Actividad guardada sin conexión. Se enviará al sincronizar.');
+        resetForm();
+        return;
+      }
+      const body = {
+        activity_type_id: payload.activity_type_id,
+        olivo_id: olivoIdNum,
+        parcela_id: payload.parcela_id,
+        personas: personasNum,
+      };
+      if (notas) body.notas = notas;
+      const res = await fetch(`${apiBase}/activities`, {
+        method: 'POST',
+        headers: { ...authHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (res.status === 401) {
+        throw new Error('No autenticado');
+      }
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error || 'No se pudo registrar la actividad');
+      }
+      const data = await res.json();
+      await upsertActivityLocal(data);
+      await refreshActivities();
+      setSaveStatus('ok');
+      setSaveMessage('Actividad registrada correctamente.');
+      resetForm();
+    } catch (error) {
+      if (error && error.message === 'No autenticado') {
+        setSaveStatus('error');
+        setSaveMessage('Sesión inválida. Vuelve a iniciar sesión.');
+        return;
+      }
+      if (!isOnline) {
+        await enqueueActivity(payload);
+        await refreshAll();
+        setSaveStatus('offline');
+        setSaveMessage('Sin conexión. Actividad en cola de sincronización.');
+        resetForm();
+        return;
+      }
+      const fallback = String(error && error.message ? error.message : 'No se pudo guardar la actividad');
+      setSaveStatus('error');
+      setSaveMessage(fallback);
+    }
+  };
+
+  const renderActivityItem = (activity) => {
+    const activityKey = getActivityKey(activity) || activity.id || `${activity.olivo_id}-${activity.created_at}`;
+    const isEditing = editingActivityKey === activityKey;
+    const draft = activityDrafts[activityKey] || buildActivityDraft(activity);
+    const editStatus = coalesce(activityEditStatus[activityKey], 'idle');
+    const editMessage = coalesce(activityEditMessage[activityKey], '');
+    const deleteStatus = coalesce(activityDeleteStatus[activityKey], 'idle');
+    const deleteMessage = coalesce(activityDeleteMessage[activityKey], '');
+    const saveDisabled = editStatus === 'saving' || (!activity.pending && !isOnline);
+    const deleteDisabled = deleteStatus === 'saving' || (!activity.pending && !isOnline);
+    return (
+      <li key={activityKey} className="activity-item">
+        <div className="activity-item-header">
+          <div className="activity-type-chip">
+            <span className="activity-type-icon">
+              {activity.activity_type_icono || '•'}
+            </span>
+            <span>{activity.activity_type_nombre || 'Actividad'}</span>
+          </div>
+          <span className="activity-date">{formatDateTime(activity.created_at)}</span>
+        </div>
+        <div className="activity-meta">
+          <span>
+            Parcela {activity.parcela_nombre || '-'} · Olivo {activity.olivo_id || '-'}
+          </span>
+          <span className="pill">
+            {activity.personas || 1} {activity.personas === 1 ? 'persona' : 'personas'}
+          </span>
+          {activity.pending && <span className="pill pill-warning">Pendiente de sync</span>}
+        </div>
+        {(activity.notas || (!activity.notas && isEditing)) && (
+          <p className="activity-notes">
+            {activity.notas && !isEditing ? activity.notas : null}
+          </p>
+        )}
+        <div className="activity-footer">
+          <span className="muted">
+            Registrado por {activity.created_by_username || '—'}
+          </span>
+        </div>
+        {isEditing ? (
+          <div className="activity-edit-form">
+            <div className="row">
+              <label>Tipo de actividad</label>
+              {activityTypes.length === 0 ? (
+                <span className="state warning">No hay tipos disponibles.</span>
+              ) : (
+                <select
+                  value={draft.typeId}
+                  onChange={(e) => handleActivityDraftChange(activityKey, 'typeId', e.target.value)}
+                >
+                  {activityTypes.map((type) => (
+                    <option key={type.id} value={String(type.id)}>
+                      {type.nombre || `Tipo ${type.id}`}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+            <div className="row">
+              <label>Nº de personas</label>
+              <input
+                value={draft.personas}
+                onChange={(e) => handleActivityDraftChange(activityKey, 'personas', e.target.value)}
+                inputMode="numeric"
+                min="1"
+              />
+            </div>
+            <div className="row">
+              <label>Notas</label>
+              <textarea
+                value={draft.notas}
+                onChange={(e) => handleActivityDraftChange(activityKey, 'notas', e.target.value)}
+                rows={3}
+                placeholder="Añade detalles"
+              />
+            </div>
+            <div className="controls" style={{ gap: '0.5rem', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => handleSaveActivityEdit(activity)}
+                disabled={saveDisabled || activityTypes.length === 0}
+              >
+                {editStatus === 'saving' ? 'Guardando…' : 'Guardar cambios'}
+              </button>
+              <button
+                type="button"
+                className="btn btn-outline btn-sm"
+                onClick={cancelActivityEdit}
+                disabled={editStatus === 'saving'}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="btn btn-outline btn-sm"
+                onClick={() => handleDeleteActivity(activity)}
+                disabled={deleteDisabled}
+              >
+                {deleteStatus === 'saving' ? 'Eliminando…' : 'Eliminar'}
+              </button>
+            </div>
+            {editStatus === 'ok' && <span className="state ok">{editMessage || 'Cambios guardados'}</span>}
+            {editStatus === 'error' && <span className="state error">{editMessage || 'Error al guardar'}</span>}
+            {deleteStatus === 'ok' && <span className="state ok">{deleteMessage || 'Actividad eliminada'}</span>}
+            {deleteStatus === 'error' && <span className="state error">{deleteMessage || 'Error al eliminar'}</span>}
+            {!activity.pending && !isOnline && (
+              <span className="state warning">Conéctate para guardar cambios o eliminar actividades sincronizadas.</span>
+            )}
+          </div>
+        ) : (
+          <div className="activity-actions" style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+            <button
+              type="button"
+              className="btn btn-outline btn-sm"
+              onClick={() => startEditActivity(activity)}
+              disabled={activityTypes.length === 0 || (!activity.pending && !isOnline)}
+            >
+              Editar
+            </button>
+            <button
+              type="button"
+              className="btn btn-outline btn-sm"
+              onClick={() => handleDeleteActivity(activity)}
+              disabled={deleteDisabled}
+            >
+              {deleteStatus === 'saving' ? 'Eliminando…' : 'Eliminar'}
+            </button>
+            {deleteStatus === 'ok' && <span className="state ok">{deleteMessage || 'Actividad eliminada'}</span>}
+            {deleteStatus === 'error' && <span className="state error">{deleteMessage || 'Error al eliminar'}</span>}
+            {!activity.pending && !isOnline && (
+              <span className="state warning">Conéctate para editar o eliminar actividades sincronizadas.</span>
+            )}
+          </div>
+        )}
+      </li>
+    );
+  };
+
+  const handleExportActivities = () => {
+    if (filteredActivitiesForExport.length === 0) return;
+    const header = [
+      'fecha_creacion',
+      'parcela_id',
+      'parcela_nombre',
+      'parcela_paraje',
+      'olivo_id',
+      'activity_type_id',
+      'activity_type_nombre',
+      'personas',
+      'notas',
+      'creado_por',
+    ];
+    const escape = (value) => `"${toStringSafe(value).replaceAll('"', '""')}"`;
+    const rows = filteredActivitiesForExport.map((activity) => ([
+      activity.created_at ? new Date(activity.created_at).toISOString() : '',
+      activity.parcela_id ?? '',
+      activity.parcela_nombre || '',
+      activity.parcela_paraje_nombre || '',
+      activity.olivo_id ?? '',
+      activity.activity_type_id ?? '',
+      activity.activity_type_nombre || '',
+      activity.personas ?? '',
+      toStringSafe(activity.notas).replace(/\r?\n/g, ' ').trim(),
+      activity.created_by_username || activity.created_by || '',
+    ]));
+    const csv = [header.join(','), ...rows.map((row) => row.map(escape).join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    const suffix = exportTypeFilter === 'all' ? 'todas' : `tipo_${exportTypeFilter}`;
+    link.download = `actividades_parcela_${suffix}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="activities-grid">
+      <div className="card activities-card">
+        <h1>Registrar actividad en campo</h1>
+        <p className="muted">
+          Guarda tareas realizadas en el olivar indicando el olivo trabajado, el tipo de actividad, el número de personas y notas.
+          El nº de parcela se busca automáticamente y puedes trabajar sin conexión.
+        </p>
+        <form onSubmit={handleSaveActivity} className="activities-form">
+          <div className="row">
+            <label>Nº de olivo</label>
+            <input
+              value={olivoValue}
+              onChange={(e) => setOlivoValue(e.target.value)}
+              placeholder="Ej. 123"
+              inputMode="numeric"
+              autoComplete="off"
+            />
+            {lookupStatus === 'waiting' && <span className="state muted">Buscando parcela…</span>}
+            {lookupStatus === 'loading' && <span className="state muted">Comprobando parcela…</span>}
+            {lookupStatus === 'success' && parcelaInfo && (
+              <div className="state ok">
+                Parcela: {parcelaInfo.nombre || '-'}
+                {parcelaInfo.nombre_interno ? ` · ${parcelaInfo.nombre_interno}` : ''}
+              </div>
+            )}
+            {lookupStatus === 'error' && lookupError && (
+              <span className="state error">{lookupError}</span>
+            )}
+          </div>
+          <div className="row">
+            <label>Tipo de actividad</label>
+            {activityTypes.length === 0 ? (
+              <span className="state warning">Puedes crear tipos desde la sección Admin &gt; Tipos de actividad.</span>
+            ) : (
+              <div className="activity-type-picker">
+                {activityTypes.map((type) => {
+                  const isSelected = String(type.id) === String(selectedTypeId);
+                  return (
+                    <button
+                      type="button"
+                      key={type.id}
+                      className={`activity-type-option ${isSelected ? 'selected' : ''}`}
+                      onClick={() => setSelectedTypeId(String(type.id))}
+                    >
+                      {type.icono && <span className="activity-type-icon">{type.icono}</span>}
+                      <span>{type.nombre}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          <div className="row">
+            <label>Nº de personas</label>
+            <input
+              type="number"
+              min="1"
+              value={personasInput}
+              onChange={(e) => setPersonasInput(e.target.value)}
+            />
+          </div>
+          <div className="row">
+            <label>Notas</label>
+            <textarea
+              value={notasInput}
+              onChange={(e) => setNotasInput(e.target.value)}
+              placeholder="Observaciones, incidencias, maquinaria utilizada…"
+            />
+          </div>
+          <div className="controls" style={{ justifyContent: 'space-between', flexWrap: 'wrap' }}>
+            <span className={`state ${isOnline ? 'ok' : 'warning'}`}>
+              {isOnline ? 'Modo en línea' : 'Guardaremos en cola hasta recuperar la red'}
+            </span>
+            <button
+              type="submit"
+              className="btn"
+              disabled={!activityTypes.length || lookupStatus === 'loading' || lookupStatus === 'waiting' || saveStatus === 'saving'}
+            >
+              {saveStatus === 'saving' ? 'Guardando…' : 'Guardar actividad'}
+            </button>
+          </div>
+          {saveStatus === 'ok' && <span className="state ok">{saveMessage}</span>}
+          {saveStatus === 'offline' && <span className="state warning">{saveMessage}</span>}
+          {saveStatus === 'error' && <span className="state error">{saveMessage}</span>}
+        </form>
+      </div>
+      <div className="card activities-feed-card">
+        <div className="activities-feed-header" style={{ justifyContent: 'space-between', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+          <div>
+            <h2>Relaciones Parcela – Actividad</h2>
+            <span className="muted">Se muestran las más recientes (máx. 100)</span>
+          </div>
+          <div className="tabs">
+            <button className={`btn ${activitiesTab === 'today' ? '' : 'btn-outline'}`} onClick={() => setActivitiesTab('today')}>Hoy</button>
+            <button className={`btn ${activitiesTab === 'previous' ? '' : 'btn-outline'}`} onClick={() => setActivitiesTab('previous')}>Anteriores</button>
+          </div>
+        </div>
+        {safeActivities.length === 0 ? (
+          <span className="muted">Todavía no hay actividades registradas.</span>
+        ) : activeActivityGroups.length === 0 ? (
+          <span className="muted">
+            {activitiesTab === 'today' ? 'Sin actividades registradas hoy.' : 'Sin actividades anteriores registradas.'}
+          </span>
+        ) : (
+          <div className="day-groups">
+            {activeActivityGroups.map((group) => (
+              <div key={group.dayKey} className="day-group">
+                <div className="day-heading">{group.displayDate}</div>
+                {group.typeSummary && (
+                  <div className="muted" style={{ marginBottom: '0.5rem' }}>
+                    Tipos: {group.typeSummary}
+                  </div>
+                )}
+                <ul className="activities-feed">
+                  {group.items.map((activity) => renderActivityItem(activity))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      {authRole === 'admin' && (
+        <div className="card activities-export-card">
+          <h2>Exportar relaciones Parcela – Actividad</h2>
+          <p className="muted">
+            Genera un CSV con las actividades visibles arriba (máx. 100 registros) filtrando por tipo.
+          </p>
+          <div className="row">
+            <label>Tipo de actividad</label>
+            <select value={exportTypeFilter} onChange={(e) => setExportTypeFilter(e.target.value)}>
+              <option value="all">Todas</option>
+              {activityTypes.map((type) => (
+                <option key={type.id} value={String(type.id)}>
+                  {type.nombre || `Tipo ${type.id}`}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="controls" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
+            <button
+              type="button"
+              className="btn btn-outline"
+              onClick={handleExportActivities}
+              disabled={filteredActivitiesForExport.length === 0}
+            >
+              Exportar CSV
+            </button>
+            <span className="muted">
+              {filteredActivitiesForExport.length} actividad{filteredActivitiesForExport.length === 1 ? '' : 'es'} lista{filteredActivitiesForExport.length === 1 ? '' : 's'} para exportar.
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ActivityTypesView({
+  apiBase,
+  authHeaders,
+  activityTypes,
+  isOnline,
+  refreshActivities,
+}) {
+  const [typeNameDraft, setTypeNameDraft] = React.useState('');
+  const [typeIconDraft, setTypeIconDraft] = React.useState('');
+  const [typeCreateStatus, setTypeCreateStatus] = React.useState('idle');
+  const [typeCreateError, setTypeCreateError] = React.useState('');
+  const [typeUpdateStatus, setTypeUpdateStatus] = React.useState({});
+  const [typeDeleteStatus, setTypeDeleteStatus] = React.useState({});
+  const [editingTypeId, setEditingTypeId] = React.useState(null);
+  const [editingDraft, setEditingDraft] = React.useState({ nombre: '', icono: '' });
+
+  const startEditType = (type) => {
+    setEditingTypeId(type.id);
+    setEditingDraft({ nombre: type.nombre || '', icono: type.icono || '' });
+  };
+
+  const cancelEditType = () => {
+    setEditingTypeId(null);
+    setEditingDraft({ nombre: '', icono: '' });
+  };
+
+  const handleCreateType = async (event) => {
+    event?.preventDefault?.();
+    const name = typeNameDraft.trim();
+    if (!name) {
+      setTypeCreateStatus('error');
+      setTypeCreateError('Nombre requerido');
+      return;
+    }
+    if (!isOnline) {
+      setTypeCreateStatus('error');
+      setTypeCreateError('Conéctate para crear tipos.');
+      return;
+    }
+    setTypeCreateStatus('saving');
+    setTypeCreateError('');
+    try {
+      const res = await fetch(`${apiBase}/activity-types`, {
+        method: 'POST',
+        headers: { ...authHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nombre: name, icono: typeIconDraft.trim() }),
+      });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error || 'No se pudo crear el tipo');
+      }
+      const created = await res.json();
+      await upsertActivityTypeLocal(created);
+      await refreshActivities();
+      setTypeCreateStatus('ok');
+      setTypeNameDraft('');
+      setTypeIconDraft('');
+      setTimeout(() => setTypeCreateStatus('idle'), 2000);
+    } catch (error) {
+      setTypeCreateStatus('error');
+      setTypeCreateError(error && error.message ? error.message : 'Error creando el tipo');
+    }
+  };
+
+  const handleUpdateType = async (typeId) => {
+    if (!editingDraft.nombre.trim()) {
+      setTypeUpdateStatus((prev) => ({ ...prev, [typeId]: 'error' }));
+      return;
+    }
+    if (!isOnline) {
+      setTypeUpdateStatus((prev) => ({ ...prev, [typeId]: 'error' }));
+      return;
+    }
+    setTypeUpdateStatus((prev) => ({ ...prev, [typeId]: 'saving' }));
+    try {
+      const res = await fetch(`${apiBase}/activity-types/${typeId}`, {
+        method: 'PUT',
+        headers: { ...authHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nombre: editingDraft.nombre.trim(), icono: editingDraft.icono.trim() }),
+      });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error || 'No se pudo actualizar');
+      }
+      const updated = await res.json();
+      await upsertActivityTypeLocal(updated);
+      await refreshActivities();
+      setTypeUpdateStatus((prev) => ({ ...prev, [typeId]: 'ok' }));
+      cancelEditType();
+      setTimeout(() => {
+        setTypeUpdateStatus((prev) => ({ ...prev, [typeId]: 'idle' }));
+      }, 2000);
+    } catch (error) {
+      setTypeUpdateStatus((prev) => ({ ...prev, [typeId]: 'error' }));
+    }
+  };
+
+  const handleDeleteType = async (type) => {
+    if (!type) return;
+    if (!window.confirm(`¿Eliminar el tipo "${type.nombre}"?`)) return;
+    if (!isOnline) {
+      setTypeDeleteStatus((prev) => ({ ...prev, [type.id]: 'error' }));
+      return;
+    }
+    setTypeDeleteStatus((prev) => ({ ...prev, [type.id]: 'saving' }));
+    try {
+      const res = await fetch(`${apiBase}/activity-types/${type.id}`, {
+        method: 'DELETE',
+        headers: { ...authHeaders },
+      });
+      if (res.status === 204) {
+        await removeActivityTypeLocal(type.id);
+        await refreshActivities();
+        setTypeDeleteStatus((prev) => ({ ...prev, [type.id]: 'ok' }));
+        setTimeout(() => {
+          setTypeDeleteStatus((prev) => ({ ...prev, [type.id]: 'idle' }));
+        }, 2000);
+      } else {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error || 'No se pudo eliminar');
+      }
+    } catch (error) {
+      setTypeDeleteStatus((prev) => ({ ...prev, [type.id]: 'error' }));
+    }
+  };
+
+  return (
+    <div className="card activities-types-card" style={{ maxWidth: '720px', margin: '0 auto', width: '100%' }}>
+      <h1>Tipos de actividad</h1>
+      <p className="muted">Define el catálogo disponible en la app para roles admin y métricas. Los cambios se propagan al modo offline tras sincronizar.</p>
+      <form onSubmit={handleCreateType} className="activities-type-form">
+        <div className="row">
+          <label>Nombre</label>
+          <input
+            value={typeNameDraft}
+            onChange={(e) => {
+              setTypeNameDraft(e.target.value);
+              if (typeCreateStatus === 'error') {
+                setTypeCreateStatus('idle');
+                setTypeCreateError('');
+              }
+            }}
+            placeholder="Ej. Poda"
+            disabled={typeCreateStatus === 'saving'}
+          />
+        </div>
+        <div className="row">
+          <label>Icono (opcional)</label>
+          <input
+            value={typeIconDraft}
+            onChange={(e) => setTypeIconDraft(e.target.value)}
+            placeholder="Emoji o texto corto"
+            disabled={typeCreateStatus === 'saving'}
+          />
+        </div>
+        <button type="submit" className="btn" disabled={typeCreateStatus === 'saving' || !isOnline}>
+          {typeCreateStatus === 'saving' ? 'Creando…' : 'Añadir tipo'}
+        </button>
+        {typeCreateStatus === 'ok' && <span className="state ok">Tipo creado.</span>}
+        {typeCreateStatus === 'error' && typeCreateError && <span className="state error">{typeCreateError}</span>}
+        {!isOnline && <span className="muted">Conéctate para crear o editar tipos.</span>}
+      </form>
+      <div className="divider" />
+      {activityTypes.length === 0 ? (
+        <span className="muted">Aún no hay tipos configurados.</span>
+      ) : (
+        <ul className="activities-type-list">
+          {activityTypes.map((type) => {
+            const updateStatus = typeUpdateStatus[type.id] || 'idle';
+            const deleteStatus = typeDeleteStatus[type.id] || 'idle';
+            const isEditing = editingTypeId === type.id;
+            return (
+              <li key={type.id} className="activities-type-item">
+                {isEditing ? (
+                  <div className="activities-type-edit">
+                    <input
+                      value={editingDraft.nombre}
+                      onChange={(e) => setEditingDraft((prev) => ({ ...prev, nombre: e.target.value }))}
+                      placeholder="Nombre"
+                    />
+                    <input
+                      value={editingDraft.icono}
+                      onChange={(e) => setEditingDraft((prev) => ({ ...prev, icono: e.target.value }))}
+                      placeholder="Icono"
+                    />
+                    <div className="activities-type-actions">
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        onClick={() => handleUpdateType(type.id)}
+                        disabled={updateStatus === 'saving' || !isOnline}
+                      >
+                        {updateStatus === 'saving' ? 'Guardando…' : 'Guardar'}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-outline btn-sm"
+                        onClick={cancelEditType}
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                    {updateStatus === 'error' && <span className="state error">Error al guardar</span>}
+                  </div>
+                ) : (
+                  <div className="activities-type-row">
+                    <div className="activities-type-chip">
+                      <span className="activity-type-icon">{type.icono || '•'}</span>
+                      <span>{type.nombre}</span>
+                    </div>
+                    <div className="activities-type-actions">
+                      <button type="button" className="btn btn-outline btn-sm" onClick={() => startEditType(type)}>
+                        Editar
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-outline btn-sm"
+                        onClick={() => handleDeleteType(type)}
+                        disabled={deleteStatus === 'saving'}
+                      >
+                        {deleteStatus === 'saving' ? 'Eliminando…' : 'Eliminar'}
+                      </button>
+                      {deleteStatus === 'error' && <span className="state error">Error</span>}
+                      {deleteStatus === 'ok' && <span className="state ok">OK</span>}
+                    </div>
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
       )}
     </div>
   );
@@ -3436,7 +4622,7 @@ function MetricsView({ apiBase, authHeaders }) {
   );
 }
 
-function UsersView({ apiBase, authHeaders, appVersion, dbUrl }) {
+function UsersView({ apiBase, authHeaders, appVersion, dbUrl, authUser, authRole }) {
   const [users, setUsers] = React.useState([]);
   const [status, setStatus] = React.useState('idle');
   const [u, setU] = React.useState('');
@@ -3567,7 +4753,10 @@ function UsersView({ apiBase, authHeaders, appVersion, dbUrl }) {
             <span className="muted" style={{ fontSize: '0.85rem', display: 'block' }}>
               Versión: {appVersion || 'cargando…'}
             </span>
-            {dbUrl && (
+            <span className="muted" style={{ fontSize: '0.85rem', display: 'block' }}>
+              Usuario: {authUser || '—'} · Rol: {authRole || '—'}
+            </span>
+            {authRole === 'admin' && dbUrl && (
               <span className="muted" style={{ fontSize: '0.85rem', display: 'block' }}>
                 DB: {dbUrl}
               </span>

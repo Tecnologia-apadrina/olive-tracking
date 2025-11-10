@@ -14,6 +14,8 @@ const metricsRoutes = require('./routes/metrics');
 const backupRoutes = require('./routes/backup');
 const etiquetasRoutes = require('./routes/etiquetas');
 const parajesRoutes = require('./routes/parajes');
+const activityTypesRoutes = require('./routes/activityTypes');
+const activitiesRoutes = require('./routes/activities');
 app.use(cors());
 // Increase payload limit to allow large CSV uploads wrapped in JSON
 app.use(express.json({ limit: '50mb' }));
@@ -33,6 +35,8 @@ app.use(metricsRoutes);
 app.use(backupRoutes);
 app.use(etiquetasRoutes);
 app.use(parajesRoutes);
+app.use(activityTypesRoutes);
+app.use(activitiesRoutes);
 app.get('/', (req, res) => {
   res.json({message: 'API operativa'});
 });

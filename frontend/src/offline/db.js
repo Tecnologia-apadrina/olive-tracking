@@ -1,7 +1,7 @@
 import { openDB } from 'idb';
 
 const DB_NAME = 'olive-tracking-offline';
-const DB_VERSION = 3;
+const DB_VERSION = 5;
 
 let dbPromise;
 
@@ -43,6 +43,14 @@ function getDb() {
         if (!db.objectStoreNames.contains('parajes')) {
           db.createObjectStore('parajes', { keyPath: 'id' });
         }
+        if (!db.objectStoreNames.contains('activityTypes')) {
+          db.createObjectStore('activityTypes', { keyPath: 'id' });
+        }
+        if (!db.objectStoreNames.contains('activities')) {
+          const store = db.createObjectStore('activities', { keyPath: 'key' });
+          store.createIndex('byParcela', 'parcela_id');
+          store.createIndex('byCreatedAt', 'created_at');
+        }
       }
     });
   }
@@ -55,7 +63,7 @@ export async function initOfflineStore() {
 
 export async function clearAllOfflineData() {
   const db = await getDb();
-  const stores = ['parcelas', 'olivos', 'palots', 'relations', 'pendingOps', 'tags', 'parajes'];
+  const stores = ['parcelas', 'olivos', 'palots', 'relations', 'pendingOps', 'tags', 'parajes', 'activityTypes', 'activities'];
   const tx = db.transaction(stores, 'readwrite');
   await Promise.all(stores.map(async (name) => tx.objectStore(name).clear()));
   await tx.done;
@@ -109,6 +117,29 @@ function normalizeBool(value) {
     return value === 1;
   }
   return Boolean(value);
+}
+
+function normalizeString(value) {
+  if (value === undefined || value === null) return '';
+  return String(value).trim();
+}
+
+function makeActivityTypeRecord(type) {
+  const id = normalizeNumber(type.id);
+  if (!Number.isInteger(id) || id <= 0) return null;
+  return {
+    id,
+    nombre: normalizeString(type.nombre || type.name || ''),
+    icono: normalizeString(type.icono || ''),
+  };
+}
+
+function toUiActivityType(record) {
+  return {
+    id: Number(record.id),
+    nombre: normalizeString(record.nombre),
+    icono: normalizeString(record.icono),
+  };
 }
 
 function normalizeTag(entry) {
@@ -244,6 +275,7 @@ function toUiPalot(record) {
 function toUiRelation(record) {
   return {
     id: record.id != null ? record.id : record.key,
+    localId: record.localId != null ? record.localId : null,
     parcela_id: record.parcela_id,
     parcela_nombre: record.parcela_nombre,
     sigpac_municipio: record.sigpac_municipio,
@@ -276,10 +308,71 @@ function toUiRelation(record) {
   };
 }
 
+function makeActivityRecord(activity) {
+  const hasServerId = activity.id != null;
+  const key = activity.key
+    ? String(activity.key)
+    : (hasServerId ? `srv-${activity.id}` : (activity.localKey || `local-${randomId()}`));
+  return {
+    key,
+    id: hasServerId ? Number(activity.id) : null,
+    localKey: activity.localKey || (!hasServerId ? key : null),
+    parcela_id: normalizeNumber(activity.parcela_id),
+    parcela_nombre: normalizeString(activity.parcela_nombre),
+    parcela_nombre_interno: normalizeString(activity.parcela_nombre_interno),
+    parcela_paraje_id: normalizeNumber(activity.parcela_paraje_id),
+    parcela_paraje_nombre: normalizeString(activity.parcela_paraje_nombre),
+    sigpac_municipio: normalizeString(activity.sigpac_municipio),
+    sigpac_poligono: normalizeString(activity.sigpac_poligono),
+    sigpac_parcela: normalizeString(activity.sigpac_parcela),
+    sigpac_recinto: normalizeString(activity.sigpac_recinto),
+    olivo_id: normalizeNumber(activity.olivo_id),
+    activity_type_id: normalizeNumber(activity.activity_type_id),
+    activity_type_nombre: normalizeString(activity.activity_type_nombre),
+    activity_type_icono: normalizeString(activity.activity_type_icono),
+    personas: normalizeNumber(activity.personas),
+    notas: activity.notas == null ? '' : String(activity.notas),
+    created_at: activity.created_at || new Date().toISOString(),
+    created_by: normalizeNumber(activity.created_by),
+    created_by_username: normalizeString(activity.created_by_username),
+    pending: Boolean(activity.pending),
+    source: activity.source || (hasServerId ? 'server' : 'local'),
+  };
+}
+
+function toUiActivity(record) {
+  return {
+    id: record.id != null ? record.id : record.key,
+    key: record.key,
+    parcela_id: record.parcela_id,
+    parcela_nombre: record.parcela_nombre,
+    parcela_nombre_interno: record.parcela_nombre_interno,
+    parcela_paraje_id: record.parcela_paraje_id,
+    parcela_paraje_nombre: record.parcela_paraje_nombre,
+    sigpac_municipio: record.sigpac_municipio,
+    sigpac_poligono: record.sigpac_poligono,
+    sigpac_parcela: record.sigpac_parcela,
+    sigpac_recinto: record.sigpac_recinto,
+    olivo_id: record.olivo_id,
+    activity_type_id: record.activity_type_id,
+    activity_type_nombre: record.activity_type_nombre,
+    activity_type_icono: record.activity_type_icono,
+    personas: record.personas,
+    notas: record.notas,
+    created_at: record.created_at,
+    created_by: record.created_by,
+    created_by_username: record.created_by_username,
+    pending: record.pending,
+    source: record.source,
+  };
+}
+
 async function clearAndPut(store, rows, transform) {
   await store.clear();
   for (const row of rows) {
-    store.put(transform ? transform(row) : row);
+    const value = transform ? transform(row) : row;
+    if (value === undefined || value === null) continue;
+    store.put(value);
   }
 }
 
@@ -291,12 +384,16 @@ export async function saveServerSnapshot({
   etiquetas = [],
   parcelas_etiquetas = [],
   parajes = [],
+  activity_types = [],
+  activities = [],
 }) {
   const db = await getDb();
-  const tx = db.transaction(['parcelas', 'olivos', 'palots', 'relations', 'pendingOps', 'tags', 'parajes'], 'readwrite');
+  const tx = db.transaction(['parcelas', 'olivos', 'palots', 'relations', 'pendingOps', 'tags', 'parajes', 'activityTypes', 'activities'], 'readwrite');
   const tagsStore = tx.objectStore('tags');
   const parcelasStore = tx.objectStore('parcelas');
   const parajesStore = tx.objectStore('parajes');
+  const activityTypesStore = tx.objectStore('activityTypes');
+  const activitiesStore = tx.objectStore('activities');
   const tagMap = new Map();
   for (const rawTag of Array.isArray(etiquetas) ? etiquetas : []) {
     const tag = normalizeTag(rawTag);
@@ -328,6 +425,7 @@ export async function saveServerSnapshot({
     id: Number(tag.id),
     nombre: tag.nombre != null ? String(tag.nombre) : '',
   }));
+  await clearAndPut(activityTypesStore, activity_types, (type) => makeActivityTypeRecord(type));
   await clearAndPut(parcelasStore, parcelas, (row) => {
     const id = normalizeNumber(row.id);
     const parcelTagIds = parcelTagMap.get(id) || [];
@@ -362,6 +460,7 @@ export async function saveServerSnapshot({
   await clearAndPut(tx.objectStore('olivos'), olivos, (row) => ({ ...row, id: normalizeNumber(row.id), id_parcela: normalizeNumber(row.id_parcela) }));
   await clearAndPut(tx.objectStore('palots'), palots, (row) => makePalotRecord({ ...row, source: 'server', pending: false }));
   await clearAndPut(tx.objectStore('relations'), relations, (row) => makeRelationRecord({ ...row, source: 'server', pending: false }));
+  await clearAndPut(activitiesStore, activities, (row) => makeActivityRecord({ ...row, source: 'server', pending: false }));
   await applyPendingOpsToStores(tx);
   await tx.done;
   await saveMeta('lastSnapshot', new Date().toISOString());
@@ -374,16 +473,34 @@ async function applyPendingOpsToStores(tx) {
   const parcelasStore = tx.objectStore('parcelas');
   const tagsStore = tx.objectStore('tags');
   const parajesStore = tx.objectStore('parajes');
+  const activitiesStore = tx.objectStore('activities');
+  const activityTypesStore = tx.objectStore('activityTypes');
   let cursor = await pendingStore.openCursor();
   while (cursor) {
-    await applyPendingOp(cursor.value, { palotsStore, relationsStore, parcelasStore, tagsStore, parajesStore });
+    await applyPendingOp(cursor.value, {
+      palotsStore,
+      relationsStore,
+      parcelasStore,
+      tagsStore,
+      parajesStore,
+      activitiesStore,
+      activityTypesStore,
+    });
     cursor = await cursor.continue();
   }
 }
 
 async function applyPendingOp(op, stores) {
   if (!op || !op.type) return;
-  const { palotsStore, relationsStore, parcelasStore, tagsStore, parajesStore } = stores;
+  const {
+    palotsStore,
+    relationsStore,
+    parcelasStore,
+    tagsStore,
+    parajesStore,
+    activitiesStore,
+    activityTypesStore,
+  } = stores;
   if (op.type === 'ensurePalot') {
     const payload = op.payload || {};
     const codigo = payload.codigo;
@@ -467,6 +584,40 @@ async function applyPendingOp(op, stores) {
       }
     }
   }
+  if (op.type === 'createActivity' && activitiesStore) {
+    const payload = op.payload || {};
+    const parcelaId = Number(payload.parcela_id);
+    const activityTypeId = Number(payload.activity_type_id);
+    const olivoId = Number(payload.olivo_id);
+    if (!Number.isInteger(parcelaId) || !Number.isInteger(activityTypeId) || !Number.isInteger(olivoId)) {
+      return;
+    }
+    let typeName = payload.activity_type_nombre || '';
+    let typeIcon = payload.activity_type_icono || '';
+    if ((!typeName || !typeIcon) && activityTypesStore && activityTypeId > 0) {
+      const typeRecord = await activityTypesStore.get(activityTypeId);
+      if (typeRecord) {
+        if (!typeName) typeName = normalizeString(typeRecord.nombre);
+        if (!typeIcon) typeIcon = normalizeString(typeRecord.icono);
+      }
+    }
+    const record = makeActivityRecord({
+      ...payload,
+      parcela_id: parcelaId,
+      activity_type_id: activityTypeId,
+      activity_type_nombre: typeName,
+      activity_type_icono: typeIcon,
+      olivo_id: olivoId,
+      personas: payload.personas != null ? payload.personas : null,
+      notas: payload.notas,
+      created_at: payload.created_at || new Date().toISOString(),
+      pending: true,
+      source: 'local',
+      key: payload.localKey || `local-activity-${op.localId || op.id}`,
+      localKey: payload.localKey || `local-activity-${op.localId || op.id}`,
+    });
+    await activitiesStore.put(record);
+  }
 }
 
 export async function listRelations() {
@@ -483,6 +634,39 @@ export async function listRelationsByParcela(parcelaId) {
   const index = tx.store.index('byParcela');
   const rows = await index.getAll(Number(parcelaId));
   return rows.map(toUiRelation);
+}
+
+export async function listActivities(limit = 100) {
+  const db = await getDb();
+  const rows = await db.transaction('activities').store.getAll();
+  const normalized = rows.map(toUiActivity);
+  normalized.sort((a, b) => {
+    const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
+    const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
+    return bTime - aTime;
+  });
+  if (limit && Number.isInteger(limit) && limit > 0) {
+    return normalized.slice(0, limit);
+  }
+  return normalized;
+}
+
+export async function listActivitiesByParcela(parcelaId, limit = 200) {
+  if (!parcelaId) return [];
+  const db = await getDb();
+  const tx = db.transaction('activities');
+  const index = tx.store.index('byParcela');
+  const rows = await index.getAll(Number(parcelaId));
+  const normalized = rows.map(toUiActivity);
+  normalized.sort((a, b) => {
+    const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
+    const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
+    return bTime - aTime;
+  });
+  if (limit && Number.isInteger(limit) && limit > 0) {
+    return normalized.slice(0, limit);
+  }
+  return normalized;
 }
 
 export async function listPalots() {
@@ -527,7 +711,7 @@ export async function listParcelas() {
 
 export async function enqueuePendingOp(op) {
   const db = await getDb();
-  const tx = db.transaction(['pendingOps', 'palots', 'relations', 'parcelas', 'tags', 'parajes'], 'readwrite');
+  const tx = db.transaction(['pendingOps', 'palots', 'relations', 'parcelas', 'tags', 'parajes', 'activities', 'activityTypes'], 'readwrite');
   const id = await tx.objectStore('pendingOps').add({
     ...op,
     createdAt: op.createdAt || new Date().toISOString(),
@@ -539,6 +723,8 @@ export async function enqueuePendingOp(op) {
     parcelasStore: tx.objectStore('parcelas'),
     tagsStore: tx.objectStore('tags'),
     parajesStore: tx.objectStore('parajes'),
+    activitiesStore: tx.objectStore('activities'),
+    activityTypesStore: tx.objectStore('activityTypes'),
   });
   await tx.done;
   return id;
@@ -552,6 +738,18 @@ export async function enqueueRelation(payload) {
   return enqueuePendingOp({ type: 'createRelation', payload });
 }
 
+export async function enqueueActivity(payload) {
+  const localKey = payload && payload.localKey ? String(payload.localKey) : `local-activity-${randomId()}`;
+  return enqueuePendingOp({
+    type: 'createActivity',
+    payload: {
+      ...payload,
+      localKey,
+      created_at: payload && payload.created_at ? payload.created_at : new Date().toISOString(),
+    },
+  });
+}
+
 export async function getPendingOps() {
   const db = await getDb();
   const rows = await db.transaction('pendingOps').store.getAll();
@@ -560,7 +758,7 @@ export async function getPendingOps() {
 
 export async function removePendingOp(id) {
   const db = await getDb();
-  const tx = db.transaction(['pendingOps', 'palots', 'relations', 'parcelas', 'tags', 'parajes'], 'readwrite');
+  const tx = db.transaction(['pendingOps', 'palots', 'relations', 'parcelas', 'tags', 'parajes', 'activities', 'activityTypes'], 'readwrite');
   const store = tx.objectStore('pendingOps');
   const op = await store.get(id);
   await store.delete(id);
@@ -570,6 +768,7 @@ export async function removePendingOp(id) {
     const parcelasStore = tx.objectStore('parcelas');
     const tagsStore = tx.objectStore('tags');
     const parajesStore = tx.objectStore('parajes');
+    const activitiesStore = tx.objectStore('activities');
     // Remove placeholders so that snapshot refresh repopulates fresh data
     if (op.type === 'ensurePalot') {
       const ensurePayload = op.payload || {};
@@ -621,6 +820,16 @@ export async function removePendingOp(id) {
               });
             }
           }
+        }
+      }
+    }
+    if (op.type === 'createActivity' && activitiesStore) {
+      const payload = op.payload || {};
+      const localKey = payload.localKey;
+      if (localKey) {
+        const existing = await activitiesStore.get(localKey);
+        if (existing && existing.source === 'local') {
+          await activitiesStore.delete(localKey);
         }
       }
     }
@@ -689,6 +898,30 @@ export async function removeEtiquetaLocal(id) {
     }
     relCursor = await relCursor.continue();
   }
+  await tx.done;
+}
+
+export async function listActivityTypes() {
+  const db = await getDb();
+  const rows = await db.transaction('activityTypes').store.getAll();
+  return rows.map(toUiActivityType).sort((a, b) => a.nombre.localeCompare(b.nombre));
+}
+
+export async function upsertActivityTypeLocal(type) {
+  const record = makeActivityTypeRecord(type);
+  if (!record) return;
+  const db = await getDb();
+  const tx = db.transaction('activityTypes', 'readwrite');
+  await tx.store.put(record);
+  await tx.done;
+}
+
+export async function removeActivityTypeLocal(id) {
+  const num = Number(id);
+  if (!Number.isInteger(num)) return;
+  const db = await getDb();
+  const tx = db.transaction('activityTypes', 'readwrite');
+  await tx.store.delete(num);
   await tx.done;
 }
 
@@ -768,4 +1001,218 @@ export async function replaceRelationPlaceholder(parcelaId, palotCodigo, serverR
     }
   }
   await tx.done;
+}
+
+export async function replaceActivityPlaceholder(localKey, serverActivity) {
+  const db = await getDb();
+  const tx = db.transaction('activities', 'readwrite');
+  if (localKey) {
+    const existing = await tx.store.get(localKey);
+    if (existing && existing.source === 'local') {
+      await tx.store.delete(localKey);
+    }
+  }
+  if (serverActivity) {
+    await tx.store.put(makeActivityRecord({ ...serverActivity, source: 'server', pending: false }));
+  }
+  await tx.done;
+}
+
+export async function upsertActivityLocal(activity) {
+  const db = await getDb();
+  const tx = db.transaction('activities', 'readwrite');
+  await tx.store.put(makeActivityRecord({ ...activity, source: 'server', pending: false }));
+  await tx.done;
+}
+
+export async function updatePendingActivityLocal(activityKey, updates = {}) {
+  if (!activityKey) return false;
+  const db = await getDb();
+  const tx = db.transaction(['activities', 'pendingOps'], 'readwrite');
+  const activitiesStore = tx.objectStore('activities');
+  const activity = await activitiesStore.get(activityKey);
+  if (!activity || activity.source !== 'local') {
+    await tx.done;
+    return false;
+  }
+  let changed = false;
+  if (updates.activity_type_id !== undefined) {
+    activity.activity_type_id = Number(updates.activity_type_id);
+    changed = true;
+  }
+  if (updates.activity_type_nombre !== undefined) {
+    activity.activity_type_nombre = updates.activity_type_nombre != null ? String(updates.activity_type_nombre) : '';
+    changed = true;
+  }
+  if (updates.activity_type_icono !== undefined) {
+    activity.activity_type_icono = updates.activity_type_icono != null ? String(updates.activity_type_icono) : '';
+    changed = true;
+  }
+  if (updates.personas !== undefined) {
+    const personasNum = Number(updates.personas);
+    if (Number.isFinite(personasNum)) {
+      activity.personas = personasNum;
+      changed = true;
+    }
+  }
+  if (updates.notas !== undefined) {
+    activity.notas = updates.notas == null ? '' : String(updates.notas);
+    changed = true;
+  }
+  if (!changed) {
+    await tx.done;
+    return false;
+  }
+  await activitiesStore.put(activity);
+  const pendingStore = tx.objectStore('pendingOps');
+  let cursor = await pendingStore.openCursor();
+  while (cursor) {
+    const value = cursor.value;
+    if (value && value.type === 'createActivity' && value.payload && value.payload.localKey === activityKey) {
+      const next = { ...value };
+      next.payload = { ...next.payload };
+      if (updates.activity_type_id !== undefined) {
+        next.payload.activity_type_id = Number(updates.activity_type_id);
+      }
+      if (updates.activity_type_nombre !== undefined) {
+        next.payload.activity_type_nombre = updates.activity_type_nombre != null ? String(updates.activity_type_nombre) : '';
+      }
+      if (updates.activity_type_icono !== undefined) {
+        next.payload.activity_type_icono = updates.activity_type_icono != null ? String(updates.activity_type_icono) : '';
+      }
+      if (updates.personas !== undefined) {
+        const personasNum = Number(updates.personas);
+        if (Number.isFinite(personasNum)) next.payload.personas = personasNum;
+      }
+      if (updates.notas !== undefined) {
+        const note = updates.notas == null ? null : String(updates.notas).trim();
+        next.payload.notas = note && note.length ? note : null;
+      }
+      await cursor.update(next);
+      break;
+    }
+    cursor = await cursor.continue();
+  }
+  await tx.done;
+  return true;
+}
+
+export async function removePendingActivityLocal(activityKey) {
+  if (!activityKey) return false;
+  const db = await getDb();
+  const tx = db.transaction(['activities', 'pendingOps'], 'readwrite');
+  const activitiesStore = tx.objectStore('activities');
+  const existing = await activitiesStore.get(activityKey);
+  if (!existing) {
+    await tx.done;
+    return false;
+  }
+  await activitiesStore.delete(activityKey);
+  const pendingStore = tx.objectStore('pendingOps');
+  let cursor = await pendingStore.openCursor();
+  while (cursor) {
+    const value = cursor.value;
+    if (value && value.type === 'createActivity' && value.payload && value.payload.localKey === activityKey) {
+      await cursor.delete();
+      break;
+    }
+    cursor = await cursor.continue();
+  }
+  await tx.done;
+  return true;
+}
+
+export async function removeActivityLocal(activityKey) {
+  if (!activityKey) return false;
+  const db = await getDb();
+  const tx = db.transaction('activities', 'readwrite');
+  const existing = await tx.store.get(activityKey);
+  if (!existing) {
+    await tx.done;
+    return false;
+  }
+  await tx.store.delete(activityKey);
+  await tx.done;
+  return true;
+}
+
+function normalizeTagUpdates(tagEntries, tagIds) {
+  if (Array.isArray(tagEntries) && tagEntries.length > 0) {
+    return normalizeTagList(tagEntries, tagIds);
+  }
+  if (Array.isArray(tagIds)) {
+    return normalizeTagList([], tagIds);
+  }
+  return [];
+}
+
+export async function updatePendingRelationLocal(relationKey, { kgs, notas, tagEntries, tagIds } = {}) {
+  if (!relationKey) return false;
+  const db = await getDb();
+  const tx = db.transaction(['relations', 'pendingOps'], 'readwrite');
+  const relationsStore = tx.objectStore('relations');
+  const relation = await relationsStore.get(relationKey);
+  if (!relation || relation.source !== 'local') {
+    await tx.done;
+    return false;
+  }
+  const pendingStore = tx.objectStore('pendingOps');
+  let changed = false;
+  if (kgs !== undefined) {
+    relation.kgs = kgs;
+    changed = true;
+  }
+  if (notas !== undefined) {
+    relation.notas = notas == null ? '' : String(notas);
+    changed = true;
+  }
+  if (tagEntries !== undefined || tagIds !== undefined) {
+    const normalizedTags = normalizeTagUpdates(tagEntries, tagIds);
+    relation.parcela_etiquetas = normalizedTags;
+    relation.parcela_etiqueta_ids = extractTagIds(normalizedTags.length ? normalizedTags : tagIds);
+    changed = true;
+  }
+  if (changed) {
+    await relationsStore.put(relation);
+  }
+  const localId = Number(relation.localId);
+  if (!Number.isInteger(localId)) {
+    await tx.done;
+    return changed;
+  }
+  const pendingOp = await pendingStore.get(localId);
+  if (!pendingOp || pendingOp.type !== 'createRelation') {
+    await tx.done;
+    return changed;
+  }
+  pendingOp.payload = pendingOp.payload || {};
+  if (kgs !== undefined) pendingOp.payload.kgs = kgs;
+  if (notas !== undefined) pendingOp.payload.notas = notas == null ? null : String(notas);
+  if (tagEntries !== undefined || tagIds !== undefined) {
+    const normalizedTags = normalizeTagUpdates(tagEntries, tagIds);
+    pendingOp.payload.parcela_etiquetas = normalizedTags;
+    pendingOp.payload.parcela_etiqueta_ids = extractTagIds(normalizedTags.length ? normalizedTags : tagIds);
+  }
+  await pendingStore.put(pendingOp);
+  await tx.done;
+  return true;
+}
+
+export async function removePendingRelationLocal(relationKey) {
+  if (!relationKey) return false;
+  const db = await getDb();
+  const tx = db.transaction(['relations', 'pendingOps'], 'readwrite');
+  const relationsStore = tx.objectStore('relations');
+  const relation = await relationsStore.get(relationKey);
+  if (!relation) {
+    await tx.done;
+    return false;
+  }
+  await relationsStore.delete(relationKey);
+  const localId = Number(relation.localId);
+  if (Number.isInteger(localId)) {
+    await tx.objectStore('pendingOps').delete(localId);
+  }
+  await tx.done;
+  return true;
 }

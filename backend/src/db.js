@@ -68,6 +68,27 @@ const SCHEMA_SQL_BASE = `
     id_etiqueta INTEGER REFERENCES etiquetas(id) ON DELETE CASCADE,
     PRIMARY KEY (id_parcela, id_etiqueta)
   );
+
+  CREATE TABLE IF NOT EXISTS activity_types (
+    id SERIAL PRIMARY KEY,
+    nombre TEXT NOT NULL,
+    icono TEXT DEFAULT '',
+    UNIQUE(nombre)
+  );
+
+  CREATE TABLE IF NOT EXISTS parcela_activities (
+    id SERIAL PRIMARY KEY,
+    parcela_id INTEGER REFERENCES parcelas(id) ON DELETE CASCADE,
+    olivo_id INTEGER REFERENCES olivos(id) ON DELETE SET NULL,
+    activity_type_id INTEGER REFERENCES activity_types(id) ON DELETE RESTRICT,
+    personas INTEGER,
+    notas TEXT,
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ DEFAULT now()
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_parcela_activities_parcela ON parcela_activities(parcela_id);
+  CREATE INDEX IF NOT EXISTS idx_parcela_activities_created_at ON parcela_activities(created_at);
 `;
 
 // Postgres-only migrations to evolve existing DBs.
@@ -106,6 +127,24 @@ const SCHEMA_SQL_ALTER = `
     id_etiqueta INTEGER REFERENCES etiquetas(id) ON DELETE CASCADE,
     PRIMARY KEY (id_parcela, id_etiqueta)
   );
+  CREATE TABLE IF NOT EXISTS activity_types (
+    id SERIAL PRIMARY KEY,
+    nombre TEXT NOT NULL,
+    icono TEXT DEFAULT '',
+    UNIQUE(nombre)
+  );
+  CREATE TABLE IF NOT EXISTS parcela_activities (
+    id SERIAL PRIMARY KEY,
+    parcela_id INTEGER REFERENCES parcelas(id) ON DELETE CASCADE,
+    olivo_id INTEGER REFERENCES olivos(id) ON DELETE SET NULL,
+    activity_type_id INTEGER REFERENCES activity_types(id) ON DELETE RESTRICT,
+    personas INTEGER,
+    notas TEXT,
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ DEFAULT now()
+  );
+  CREATE INDEX IF NOT EXISTS idx_parcela_activities_parcela ON parcela_activities(parcela_id);
+  CREATE INDEX IF NOT EXISTS idx_parcela_activities_created_at ON parcela_activities(created_at);
 `;
 
 const forceMem = (process.env.USE_MEM || '').toLowerCase() === '1' || (process.env.USE_MEM || '').toLowerCase() === 'true';

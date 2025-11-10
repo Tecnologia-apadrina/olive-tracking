@@ -5,6 +5,7 @@ Aplicación PWA para gestionar la relación parcela-palot durante la cosecha de 
 ## Características principales
 - Frontend React + Vite empaquetado como PWA con modo offline, sincronización manual y gestión de cola mientras no hay red.
 - Backend Node.js (Express) protegido con Basic Auth y endpoints para parcelas, palots, relaciones y usuarios.
+- Registro de actividades de campo con catálogo de tipos personalizable (icono + nombre) y guardado offline.
 - Postgres 16 como base de datos; scripts de importación masiva mediante `psql`.
 - Service worker con cacheo de shell, indicador de relaciones pendientes y botón de sincronizar.
 
@@ -101,6 +102,15 @@ Notas:
 - El frontend guarda en IndexedDB las tablas relevantes y muestra el número de operaciones pendientes.
 - Puedes forzar una sincronización con el botón “Sincronizar”. El estado (en línea, pendientes, última sync) aparece en la parte superior.
 - Las relaciones añadidas sin conexión se muestran con badge “Pendiente de sincronización” y se envían cuando vuelve la red.
+
+## Registro de actividades en campo
+- Nuevo apartado `/actividades` accesible desde la cabecera para registrar tareas realizadas sobre un olivo concreto indicando tipo de actividad, nº de personas y notas.
+- El flujo funciona completamente offline: si no hay red, las actividades quedan en cola y se sincronizan cuando vuelva la conexión.
+- Los roles `admin` y `metricas` pueden crear/editar/eliminar los tipos disponibles (nombre + icono) desde el apartado `/tipos-actividad`. Los demás usuarios pueden consultar la lista y registrar actividades con ellos.
+- API expuesta:
+  - `GET /activities` (filtros: `parcelaId`, `olivoId`, `limit`) y `POST /activities`.
+  - `GET/POST/PUT/DELETE /activity-types` (alta/gestión exclusiva para `admin` o `metricas`).
+- El snapshot de sincronización incluye los tipos y las últimas actividades para que siempre estén visibles incluso en modo offline.
 
 ## Desarrollo local (opcional)
 Aunque el flujo recomendado es Docker, sigue disponible el modo local:
