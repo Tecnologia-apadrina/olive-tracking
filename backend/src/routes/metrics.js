@@ -172,12 +172,14 @@ router.get('/metrics/harvest', requireAuth, requireAdminOrMetrics, async (req, r
       const olivos = Number(row.olivos_cosechados) || 0;
       const kgs = Number(row.kgs_cosechados) || 0;
       const avgOlivos = harvested > 0 ? olivos / harvested : 0;
+      const avgKgs = harvested > 0 ? kgs / harvested : 0;
       return {
         harvest_date: row.harvest_date,
         parcelas_cosechadas: harvested,
         olivos_cosechados: olivos,
         kgs_cosechados: kgs,
         avg_olivos_por_parcela: avgOlivos,
+        avg_kgs_por_parcela: avgKgs,
       };
     });
 

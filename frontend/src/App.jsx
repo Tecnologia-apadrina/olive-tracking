@@ -3370,7 +3370,14 @@ function MetricsView({ apiBase, authHeaders }) {
   const [error, setError] = React.useState('');
   const [totalParcelas, setTotalParcelas] = React.useState(0);
   const [totalOlivos, setTotalOlivos] = React.useState(0);
-  const [resumenTotales, setResumenTotales] = React.useState({ parcelas: 0, olivos: 0, kgs: 0, avgOlivos: 0, avgKgsPorOlivo: 0 });
+  const [resumenTotales, setResumenTotales] = React.useState({
+    parcelas: 0,
+    olivos: 0,
+    kgs: 0,
+    avgOlivos: 0,
+    avgKgsPorOlivo: 0,
+    avgKgsPorParcela: 0,
+  });
   const [metricsTab, setMetricsTab] = React.useState('daily'); // daily | perParcel | estimates
   const [lowKgsExtraPercent, setLowKgsExtraPercent] = React.useState(10);
   const [equal300ExtraPercent, setEqual300ExtraPercent] = React.useState(0);
@@ -3421,12 +3428,16 @@ function MetricsView({ apiBase, authHeaders }) {
         const avgOlivos = row.avg_olivos_por_parcela != null
           ? Number(row.avg_olivos_por_parcela)
           : (parcelas > 0 ? olivos / parcelas : 0);
+        const avgKgsPorParcela = row.avg_kgs_por_parcela != null
+          ? Number(row.avg_kgs_por_parcela)
+          : (parcelas > 0 ? kgs / parcelas : 0);
         return {
           harvest_date: row.harvest_date,
           parcelas_cosechadas: parcelas,
           olivos_cosechados: olivos,
           kgs_cosechados: kgs,
           avg_olivos_por_parcela: avgOlivos,
+          avg_kgs_por_parcela: avgKgsPorParcela,
         };
       });
       setRows(normalized);
@@ -3435,12 +3446,14 @@ function MetricsView({ apiBase, authHeaders }) {
       const totalKgs = normalized.reduce((sum, row) => sum + row.kgs_cosechados, 0);
       const avgOlivosGlobal = totalParcelasCosechadas > 0 ? totalOlivosCosechados / totalParcelasCosechadas : 0;
       const avgKgsPorOlivo = totalOlivosCosechados > 0 ? totalKgs / totalOlivosCosechados : 0;
+      const avgKgsPorParcela = totalParcelasCosechadas > 0 ? totalKgs / totalParcelasCosechadas : 0;
       setResumenTotales({
         parcelas: totalParcelasCosechadas,
         olivos: totalOlivosCosechados,
         kgs: totalKgs,
         avgOlivos: avgOlivosGlobal,
         avgKgsPorOlivo,
+        avgKgsPorParcela,
       });
       const perParcelaData = Array.isArray(data.perParcela) ? data.perParcela : [];
       const perParcelaNormalized = perParcelaData.map((row) => {
@@ -4227,6 +4240,7 @@ function MetricsView({ apiBase, authHeaders }) {
                     <th>Parcelas cosechadas</th>
                     <th>Olivos cosechados</th>
                     <th>Media olivos/parcela</th>
+                    <th>Media kgs/parcela</th>
                     <th>Kgs cosechados</th>
                   </tr>
                 </thead>
@@ -4237,6 +4251,7 @@ function MetricsView({ apiBase, authHeaders }) {
                       <td>{formatNumber(row.parcelas_cosechadas, 0)}</td>
                       <td>{formatNumber(row.olivos_cosechados, 0)}</td>
                       <td>{formatNumber(row.avg_olivos_por_parcela)}</td>
+                      <td>{formatNumber(row.avg_kgs_por_parcela)}</td>
                       <td>{formatNumber(row.kgs_cosechados)}</td>
                     </tr>
                   ))}
@@ -4245,6 +4260,7 @@ function MetricsView({ apiBase, authHeaders }) {
                     <td style={{ fontWeight: 600 }}>{formatNumber(resumenTotales.parcelas, 0)}</td>
                     <td style={{ fontWeight: 600 }}>{formatNumber(resumenTotales.olivos, 0)}</td>
                     <td style={{ fontWeight: 600 }}>{formatNumber(resumenTotales.avgOlivos)}</td>
+                    <td style={{ fontWeight: 600 }}>{formatNumber(resumenTotales.avgKgsPorParcela)}</td>
                     <td style={{ fontWeight: 600 }}>{formatNumber(resumenTotales.kgs)}</td>
                   </tr>
                 </tbody>
