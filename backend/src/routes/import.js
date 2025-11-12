@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const { resolveRequestCountry } = require('../utils/country');
 
 const requireAuth = (req, res, next) => {
   if (!req.userId) return res.status(401).json({ error: 'No autenticado' });
@@ -121,29 +122,33 @@ function parseCsv(text) {
 }
 
 // Clear tables: relations, olivos, palots, parcelas
-router.post('/import/clear', requireAuth, requireAdmin, async (_req, res) => {
-  await db.public.none('DELETE FROM parcelas_palots');
-  await db.public.none('DELETE FROM olivos');
-  await db.public.none('DELETE FROM palots');
-  await db.public.none('DELETE FROM parcelas');
+router.post('/import/clear', requireAuth, requireAdmin, async (req, res) => {
+  const countryCode = resolveRequestCountry(req);
+  await db.public.none('DELETE FROM parcelas_palots WHERE country_code = $1', [countryCode]);
+  await db.public.none('DELETE FROM olivos WHERE country_code = $1', [countryCode]);
+  await db.public.none('DELETE FROM palots WHERE country_code = $1', [countryCode]);
+  await db.public.none('DELETE FROM parcelas WHERE country_code = $1', [countryCode]);
   res.json({ ok: true });
 });
 
 // Clear only olivos
-router.post('/import/clear/olivos', requireAuth, requireAdmin, async (_req, res) => {
-  await db.public.none('DELETE FROM olivos');
+router.post('/import/clear/olivos', requireAuth, requireAdmin, async (req, res) => {
+  const countryCode = resolveRequestCountry(req);
+  await db.public.none('DELETE FROM olivos WHERE country_code = $1', [countryCode]);
   res.json({ ok: true });
 });
 
 // Clear parcelas (and dependents to satisfy FKs)
-router.post('/import/clear/parcelas', requireAuth, requireAdmin, async (_req, res) => {
-  await db.public.none('DELETE FROM parcelas_palots');
-  await db.public.none('DELETE FROM olivos');
-  await db.public.none('DELETE FROM parcelas');
+router.post('/import/clear/parcelas', requireAuth, requireAdmin, async (req, res) => {
+  const countryCode = resolveRequestCountry(req);
+  await db.public.none('DELETE FROM parcelas_palots WHERE country_code = $1', [countryCode]);
+  await db.public.none('DELETE FROM olivos WHERE country_code = $1', [countryCode]);
+  await db.public.none('DELETE FROM parcelas WHERE country_code = $1', [countryCode]);
   res.json({ ok: true });
 });
 
 router.post('/import/parcelas', requireAuth, requireAdmin, async (req, res) => {
+  const countryCode = resolveRequestCountry(req);
   const { csv } = req.body || {};
   if (!csv) return res.status(400).json({ error: 'csv requerido' });
   const { header, rows } = parseCsv(csv);
@@ -225,8 +230,21 @@ router.post('/import/parcelas', requireAuth, requireAdmin, async (req, res) => {
       continue;
     }
     await db.public.none(
-        `INSERT INTO parcelas(id, nombre, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, variedad, nombre_interno, porcentaje, num_olivos, hectareas)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        `INSERT INTO parcelas(
+           id,
+           nombre,
+           sigpac_municipio,
+           sigpac_poligono,
+           sigpac_parcela,
+           sigpac_recinto,
+           variedad,
+           nombre_interno,
+           porcentaje,
+           num_olivos,
+           hectareas,
+           country_code
+         )
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
          ON CONFLICT (id) DO UPDATE SET
            nombre = COALESCE(EXCLUDED.nombre, parcelas.nombre),
            sigpac_municipio = COALESCE(EXCLUDED.sigpac_municipio, parcelas.sigpac_municipio),
@@ -238,8 +256,9 @@ router.post('/import/parcelas', requireAuth, requireAdmin, async (req, res) => {
            porcentaje       = COALESCE(EXCLUDED.porcentaje,       parcelas.porcentaje),
            num_olivos       = COALESCE(EXCLUDED.num_olivos,       parcelas.num_olivos),
            hectareas        = COALESCE(EXCLUDED.hectareas,        parcelas.hectareas)
+         WHERE parcelas.country_code = EXCLUDED.country_code
         `,
-        [id, nombre, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, variedad, nombre_interno, porcentaje, num_olivos, hectareas]
+        [id, nombre, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, variedad, nombre_interno, porcentaje, num_olivos, hectareas, countryCode]
       );
       inserted++;
   }
@@ -250,7 +269,10 @@ router.post('/import/palots', requireAuth, requireAdmin, async (req, res) => {
   const { csv } = req.body || {};
   if (!csv) return res.status(400).json({ error: 'csv requerido' });
   const { rows } = parseCsv(csv);
-  const existing = new Set((await db.public.many('SELECT codigo FROM palots')).map(r => r.codigo));
+  const countryCode = resolveRequestCountry(req);
+  const existing = new Set(
+    (await db.public.many('SELECT codigo FROM palots WHERE country_code = $1', [countryCode])).map((r) => r.codigo)
+  );
   let inserted = 0;
   for (const r of rows) {
     const id = r.id ? parseInt(r.id, 10) : null;
@@ -258,9 +280,12 @@ router.post('/import/palots', requireAuth, requireAdmin, async (req, res) => {
     if (!codigo) continue;
     if (existing.has(codigo)) continue;
     if (id) {
-      await db.public.none('INSERT INTO palots(id, codigo) VALUES($1, $2)', [id, codigo]);
+      await db.public.none(
+        'INSERT INTO palots(id, codigo, country_code) VALUES($1, $2, $3) ON CONFLICT (id) DO UPDATE SET codigo = EXCLUDED.codigo WHERE palots.country_code = EXCLUDED.country_code',
+        [id, codigo, countryCode]
+      );
     } else {
-      await db.public.none('INSERT INTO palots(codigo) VALUES($1)', [codigo]);
+      await db.public.none('INSERT INTO palots(codigo, country_code) VALUES($1, $2)', [codigo, countryCode]);
     }
     existing.add(codigo);
     inserted++;
@@ -274,6 +299,7 @@ router.post('/import/olivos', requireAuth, requireAdmin, async (req, res) => {
     if (!csv) return res.status(400).json({ error: 'csv requerido' });
     const { header, rows } = parseCsv(csv);
     if (rows.length === 0) return res.status(400).json({ error: 'CSV vacío' });
+    const countryCode = resolveRequestCountry(req);
 
     // Validate required columns (allowing simple aliases)
     const requiredOptions = [
@@ -296,7 +322,10 @@ router.post('/import/olivos', requireAuth, requireAdmin, async (req, res) => {
     let existingParcelaIds = new Set();
     if (neededParcelaIds.length > 0) {
       try {
-        const found = await db.public.many('SELECT id FROM parcelas WHERE id = ANY($1)', [neededParcelaIds]);
+        const found = await db.public.many(
+          'SELECT id FROM parcelas WHERE id = ANY($1) AND country_code = $2',
+          [neededParcelaIds, countryCode]
+        );
         existingParcelaIds = new Set(found.map((r) => r.id));
       } catch (_) {
         existingParcelaIds = new Set();
@@ -321,11 +350,15 @@ router.post('/import/olivos', requireAuth, requireAdmin, async (req, res) => {
       try {
         if (Number.isInteger(id)) {
           await db.public.none(
-            'INSERT INTO olivos(id, id_parcela) VALUES($1, $2) ON CONFLICT (id) DO UPDATE SET id_parcela = EXCLUDED.id_parcela',
-            [id, id_parcela]
+            `INSERT INTO olivos(id, id_parcela, country_code)
+             VALUES($1, $2, $3)
+             ON CONFLICT (id) DO UPDATE
+               SET id_parcela = EXCLUDED.id_parcela
+             WHERE olivos.country_code = EXCLUDED.country_code`,
+            [id, id_parcela, countryCode]
           );
         } else {
-          await db.public.none('INSERT INTO olivos(id_parcela) VALUES($1)', [id_parcela]);
+          await db.public.none('INSERT INTO olivos(id_parcela, country_code) VALUES($1, $2)', [id_parcela, countryCode]);
         }
         inserted++;
       } catch (e) {

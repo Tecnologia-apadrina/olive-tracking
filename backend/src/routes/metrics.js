@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const { resolveRequestCountry } = require('../utils/country');
 
 const LOW_KGS_THRESHOLD = 300;
 const DEFAULT_LOW_KGS_PERCENT = 100;
@@ -64,6 +65,7 @@ const parseMunicipioCodes = (raw) => {
 
 router.get('/metrics/harvest', requireAuth, requireAdminOrMetrics, async (req, res) => {
   try {
+    const countryCode = resolveRequestCountry(req);
     const excludeIds = parseExcludeIds(req.query.exclude);
     const excludeParajeIds = parseExcludeIds(req.query.excludeParajes || req.query.exclude_parajes);
     const excludeMunicipios = parseMunicipioCodes(
@@ -108,8 +110,8 @@ router.get('/metrics/harvest', requireAuth, requireAdminOrMetrics, async (req, r
     };
 
     const buildFilterClause = (alias) => {
-      const clauses = [];
-      const params = [];
+      const clauses = [`${alias}.country_code = $1`];
+      const params = [countryCode];
       if (excludeIds.length) {
         params.push(excludeIds);
         clauses.push(`NOT (${alias}.id = ANY($${params.length}::int[]))`);
@@ -123,7 +125,7 @@ router.get('/metrics/harvest', requireAuth, requireAdminOrMetrics, async (req, r
         clauses.push(`(${alias}.sigpac_municipio IS NULL OR NOT (${alias}.sigpac_municipio = ANY($${params.length}::text[])))`);
       }
       return {
-        where: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',
+        where: `WHERE ${clauses.join(' AND ')}`,
         params,
       };
     };
@@ -152,7 +154,7 @@ router.get('/metrics/harvest', requireAuth, requireAdminOrMetrics, async (req, r
           COALESCE(par.num_olivos, 0) AS num_olivos,
           COALESCE(SUM(${adjustedDailyKgsExpr}), 0) AS kgs_parcela
         FROM parcelas_palots pp
-        JOIN parcelas par ON par.id = pp.id_parcela
+        JOIN parcelas par ON par.id = pp.id_parcela AND par.country_code = pp.country_code
         ${dailyFilter.where}
         GROUP BY pp.created_at::date, pp.id_parcela, par.num_olivos
       )
@@ -192,7 +194,7 @@ router.get('/metrics/harvest', requireAuth, requireAdminOrMetrics, async (req, r
         COALESCE(par.num_olivos, 0) AS num_olivos,
         COALESCE(SUM(${adjustedPerParcelaKgsExpr}), 0) AS total_kgs
       FROM parcelas par
-      LEFT JOIN parcelas_palots pp ON pp.id_parcela = par.id
+      LEFT JOIN parcelas_palots pp ON pp.id_parcela = par.id AND pp.country_code = par.country_code
       ${perParcelaFilter.where}
       GROUP BY par.id, par.nombre, par.num_olivos
       ORDER BY par.nombre`;

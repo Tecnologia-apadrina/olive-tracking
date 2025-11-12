@@ -69,10 +69,10 @@ export async function clearAllOfflineData() {
   await tx.done;
 }
 
-export async function saveAuthSession({ token, username, role }) {
+export async function saveAuthSession({ token, username, role, country }) {
   const db = await getDb();
   const tx = db.transaction('meta', 'readwrite');
-  tx.store.put({ token, username, role, storedAt: new Date().toISOString() }, 'auth');
+  tx.store.put({ token, username, role, country, storedAt: new Date().toISOString() }, 'auth');
   await tx.done;
 }
 

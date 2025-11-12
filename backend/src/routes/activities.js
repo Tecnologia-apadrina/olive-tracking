@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const { resolveRequestCountry } = require('../utils/country');
 
 const requireAuth = (req, res, next) => {
   if (!req.userId) return res.status(401).json({ error: 'No autenticado' });
@@ -20,7 +21,7 @@ const normalizeNotes = (value) => {
   return normalized.length ? normalized : null;
 };
 
-const fetchActivityWithDetails = async (activityId) => {
+const fetchActivityWithDetails = async (activityId, countryCode) => {
   return db.public.one(
     `SELECT pa.id,
             pa.parcela_id,
@@ -42,12 +43,12 @@ const fetchActivityWithDetails = async (activityId) => {
             pa.created_by,
             u.username AS created_by_username
        FROM parcela_activities pa
-       JOIN parcelas par ON par.id = pa.parcela_id
-       LEFT JOIN parajes pj ON pj.id = par.paraje_id
-       JOIN activity_types at ON at.id = pa.activity_type_id
+       JOIN parcelas par ON par.id = pa.parcela_id AND par.country_code = pa.country_code
+       LEFT JOIN parajes pj ON pj.id = par.paraje_id AND pj.country_code = par.country_code
+       JOIN activity_types at ON at.id = pa.activity_type_id AND at.country_code = pa.country_code
        LEFT JOIN users u ON u.id = pa.created_by
-      WHERE pa.id = $1`,
-    [activityId]
+      WHERE pa.id = $1 AND pa.country_code = $2`,
+    [activityId, countryCode]
   );
 };
 
@@ -72,21 +73,23 @@ const listActivitiesQueryBase = `
          pa.created_by,
          u.username AS created_by_username
     FROM parcela_activities pa
-    JOIN parcelas par ON par.id = pa.parcela_id
-    LEFT JOIN parajes pj ON pj.id = par.paraje_id
-    JOIN activity_types at ON at.id = pa.activity_type_id
+    JOIN parcelas par ON par.id = pa.parcela_id AND par.country_code = pa.country_code
+    LEFT JOIN parajes pj ON pj.id = par.paraje_id AND pj.country_code = par.country_code
+    JOIN activity_types at ON at.id = pa.activity_type_id AND at.country_code = pa.country_code
     LEFT JOIN users u ON u.id = pa.created_by
 `;
 
 const buildListActivitiesQuery = (filters = {}) => {
-  const conditions = [];
-  const params = [];
-  if (filters.parcelaId) {
-    params.push(filters.parcelaId);
+  const { countryCode, parcelaId, olivoId } = filters;
+  if (!countryCode) throw new Error('countryCode requerido');
+  const conditions = ['pa.country_code = $1'];
+  const params = [countryCode];
+  if (parcelaId) {
+    params.push(parcelaId);
     conditions.push(`pa.parcela_id = $${params.length}`);
   }
-  if (filters.olivoId) {
-    params.push(filters.olivoId);
+  if (olivoId) {
+    params.push(olivoId);
     conditions.push(`pa.olivo_id = $${params.length}`);
   }
   let sql = listActivitiesQueryBase;
@@ -104,8 +107,10 @@ router.get('/activities', requireAuth, async (req, res) => {
   const parcelaId = parseInteger(req.query.parcelaId || req.query.parcela_id);
   const olivoId = parseInteger(req.query.olivoId || req.query.olivo_id);
   const limitRaw = parseInteger(req.query.limit);
+  const countryCode = resolveRequestCountry(req);
   try {
     const { sql, params } = buildListActivitiesQuery({
+      countryCode,
       parcelaId,
       olivoId,
       limit: limitRaw,
@@ -120,8 +125,13 @@ router.get('/activities', requireAuth, async (req, res) => {
 router.get('/parcelas/:parcelaId/activities', requireAuth, async (req, res) => {
   const parcelaId = parseInteger(req.params.parcelaId);
   if (!parcelaId) return res.status(400).json({ error: 'Parcela inválida' });
+  const countryCode = resolveRequestCountry(req);
   try {
-    const { sql, params } = buildListActivitiesQuery({ parcelaId, limit: 200 });
+    const { sql, params } = buildListActivitiesQuery({
+      countryCode,
+      parcelaId,
+      limit: 200,
+    });
     const rows = await db.public.many(sql, params);
     res.json(rows);
   } catch (error) {
@@ -136,6 +146,7 @@ router.post('/activities', requireAuth, async (req, res) => {
   const personas = parseInteger(body.personas) || 1;
   const notas = normalizeNotes(body.notas);
   let parcelaId = parseInteger(body.parcela_id);
+  const countryCode = resolveRequestCountry(req);
 
   if (!activityTypeId) {
     return res.status(400).json({ error: 'activity_type_id requerido' });
@@ -144,7 +155,10 @@ router.post('/activities', requireAuth, async (req, res) => {
     return res.status(400).json({ error: 'olivo_id requerido' });
   }
   try {
-    const type = await db.public.one('SELECT id FROM activity_types WHERE id = $1', [activityTypeId]);
+    const type = await db.public.one(
+      'SELECT id FROM activity_types WHERE id = $1 AND country_code = $2',
+      [activityTypeId, countryCode]
+    );
     if (!type) throw new Error('Tipo no encontrado');
   } catch (error) {
     return res.status(400).json({ error: 'Tipo de actividad inexistente' });
@@ -154,9 +168,9 @@ router.post('/activities', requireAuth, async (req, res) => {
     olivoRow = await db.public.one(
       `SELECT o.id, o.id_parcela, par.nombre
          FROM olivos o
-         JOIN parcelas par ON par.id = o.id_parcela
-        WHERE o.id = $1`,
-      [olivoId]
+         JOIN parcelas par ON par.id = o.id_parcela AND par.country_code = o.country_code
+        WHERE o.id = $1 AND o.country_code = $2`,
+      [olivoId, countryCode]
     );
   } catch (error) {
     return res.status(400).json({ error: 'Olivo inexistente' });
@@ -170,12 +184,19 @@ router.post('/activities', requireAuth, async (req, res) => {
   const userId = req.userId || null;
   try {
     const inserted = await db.public.one(
-      `INSERT INTO parcela_activities(parcela_id, olivo_id, activity_type_id, personas, notas, created_by)
-       VALUES($1, $2, $3, $4, $5, $6)
+      `INSERT INTO parcela_activities(
+         parcela_id,
+         olivo_id,
+         activity_type_id,
+         personas,
+         notas,
+         created_by,
+         country_code
+       ) VALUES($1, $2, $3, $4, $5, $6, $7)
        RETURNING id`,
-      [parcelaId, olivoId, activityTypeId, personas > 0 ? personas : 1, notas, userId]
+      [parcelaId, olivoId, activityTypeId, personas > 0 ? personas : 1, notas, userId, countryCode]
     );
-    const activity = await fetchActivityWithDetails(inserted.id);
+    const activity = await fetchActivityWithDetails(inserted.id, countryCode);
     res.status(201).json(activity);
   } catch (error) {
     res.status(500).json({ error: 'No se pudo registrar la actividad' });
@@ -186,32 +207,35 @@ router.patch('/activities/:id', requireAuth, async (req, res) => {
   const activityId = parseInteger(req.params.id);
   if (!activityId) return res.status(400).json({ error: 'Actividad inválida' });
   const { activity_type_id, personas, notas } = req.body || {};
+  const countryCode = resolveRequestCountry(req);
   const fields = [];
-  const params = [];
-  let idx = 1;
+  const values = [];
 
   if (activity_type_id !== undefined) {
     const typeId = parseInteger(activity_type_id);
     if (!typeId) return res.status(400).json({ error: 'Tipo de actividad inválido' });
     try {
-      await db.public.one('SELECT id FROM activity_types WHERE id = $1', [typeId]);
+      await db.public.one(
+        'SELECT id FROM activity_types WHERE id = $1 AND country_code = $2',
+        [typeId, countryCode]
+      );
     } catch (_) {
       return res.status(400).json({ error: 'Tipo de actividad inexistente' });
     }
-    fields.push(`activity_type_id = $${idx++}`);
-    params.push(typeId);
+    fields.push(`activity_type_id = $${values.length + 1}`);
+    values.push(typeId);
   }
 
   if (personas !== undefined) {
     const parsedPersonas = parseInteger(personas);
     if (!parsedPersonas || parsedPersonas < 1) return res.status(400).json({ error: 'Número de personas inválido' });
-    fields.push(`personas = $${idx++}`);
-    params.push(parsedPersonas);
+    fields.push(`personas = $${values.length + 1}`);
+    values.push(parsedPersonas);
   }
 
   if (notas !== undefined) {
-    fields.push(`notas = $${idx++}`);
-    params.push(normalizeNotes(notas));
+    fields.push(`notas = $${values.length + 1}`);
+    values.push(normalizeNotes(notas));
   }
 
   if (!fields.length) {
@@ -219,13 +243,16 @@ router.patch('/activities/:id', requireAuth, async (req, res) => {
   }
 
   try {
-    params.push(activityId);
+    const idIdx = values.length + 1;
+    const countryIdx = values.length + 2;
     const result = await db.public.result(
-      `UPDATE parcela_activities SET ${fields.join(', ')} WHERE id = $${idx}`,
-      params,
+      `UPDATE parcela_activities
+          SET ${fields.join(', ')}
+        WHERE id = $${idIdx} AND country_code = $${countryIdx}`,
+      [...values, activityId, countryCode],
     );
     if (result.rowCount === 0) return res.status(404).json({ error: 'Actividad no encontrada' });
-    const updated = await fetchActivityWithDetails(activityId);
+    const updated = await fetchActivityWithDetails(activityId, countryCode);
     res.json(updated);
   } catch (error) {
     res.status(500).json({ error: 'No se pudo actualizar la actividad' });
@@ -235,8 +262,12 @@ router.patch('/activities/:id', requireAuth, async (req, res) => {
 router.delete('/activities/:id', requireAuth, async (req, res) => {
   const activityId = parseInteger(req.params.id);
   if (!activityId) return res.status(400).json({ error: 'Actividad inválida' });
+  const countryCode = resolveRequestCountry(req);
   try {
-    const result = await db.public.result('DELETE FROM parcela_activities WHERE id = $1', [activityId]);
+    const result = await db.public.result(
+      'DELETE FROM parcela_activities WHERE id = $1 AND country_code = $2',
+      [activityId, countryCode]
+    );
     if (result.rowCount === 0) return res.status(404).json({ error: 'Actividad no encontrada' });
     res.status(204).end();
   } catch (error) {

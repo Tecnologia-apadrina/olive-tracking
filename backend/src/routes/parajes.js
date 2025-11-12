@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const { resolveRequestCountry } = require('../utils/country');
 
 const requireAuth = (req, res, next) => {
   if (!req.userId) return res.status(401).json({ error: 'No autenticado' });
@@ -16,38 +17,42 @@ const requireAdmin = (req, res, next) => {
 
 const normalizeName = (value) => (value == null ? '' : String(value).trim());
 
-const findOrCreateParaje = async (nombre, { cache }) => {
+const findOrCreateParaje = async (nombre, { cache, countryCode }) => {
   const key = normalizeName(nombre).toLocaleLowerCase('es-ES');
+  const cacheKey = `${key}::${countryCode}`;
   if (!key) return null;
-  if (cache.has(key)) return cache.get(key);
+  if (cache.has(cacheKey)) return cache.get(cacheKey);
 
   const existing = await db.public.many(
-    'SELECT id, nombre FROM parajes WHERE lower(nombre) = lower($1)',
-    [nombre]
+    'SELECT id, nombre FROM parajes WHERE lower(nombre) = lower($1) AND country_code = $2',
+    [nombre, countryCode]
   );
   if (existing.length > 0) {
     const row = existing[0];
-    cache.set(key, row);
+    cache.set(cacheKey, row);
     return row;
   }
   const inserted = await db.public.one(
-    'INSERT INTO parajes(nombre) VALUES($1) RETURNING id, nombre',
-    [nombre]
+    'INSERT INTO parajes(nombre, country_code) VALUES($1, $2) RETURNING id, nombre',
+    [nombre, countryCode]
   );
-  cache.set(key, inserted);
+  cache.set(cacheKey, inserted);
   return inserted;
 };
 
-router.get('/parajes', requireAuth, requireAdmin, async (_req, res) => {
+router.get('/parajes', requireAuth, requireAdmin, async (req, res) => {
+  const countryCode = resolveRequestCountry(req);
   try {
     const rows = await db.public.many(
       `SELECT p.id,
               p.nombre,
               COUNT(pa.id)::int AS parcelas_count
          FROM parajes p
-         LEFT JOIN parcelas pa ON pa.paraje_id = p.id
+         LEFT JOIN parcelas pa ON pa.paraje_id = p.id AND pa.country_code = p.country_code
+        WHERE p.country_code = $1
         GROUP BY p.id, p.nombre
         ORDER BY lower(p.nombre)`
+      , [countryCode]
     );
     res.json(rows);
   } catch (error) {
@@ -56,14 +61,15 @@ router.get('/parajes', requireAuth, requireAdmin, async (_req, res) => {
 });
 
 router.post('/parajes', requireAuth, requireAdmin, async (req, res) => {
+  const countryCode = resolveRequestCountry(req);
   const nombre = normalizeName(req.body?.nombre);
   if (!nombre) {
     return res.status(400).json({ error: 'nombre requerido' });
   }
   try {
     const row = await db.public.one(
-      'INSERT INTO parajes(nombre) VALUES($1) RETURNING *',
-      [nombre]
+      'INSERT INTO parajes(nombre, country_code) VALUES($1, $2) RETURNING *',
+      [nombre, countryCode]
     );
     res.status(201).json(row);
   } catch (error) {
@@ -77,28 +83,29 @@ router.post('/parajes', requireAuth, requireAdmin, async (req, res) => {
 router.patch('/parajes/:id', requireAuth, requireAdmin, async (req, res) => {
   const { id } = req.params;
   const numericId = Number(id);
+  const countryCode = resolveRequestCountry(req);
   if (!Number.isInteger(numericId) || numericId <= 0) {
     return res.status(400).json({ error: 'id inválido' });
   }
   const updates = [];
   const values = [];
-  let idx = 1;
   if (req.body?.nombre !== undefined) {
     const nombre = normalizeName(req.body.nombre);
     if (!nombre) {
       return res.status(400).json({ error: 'nombre requerido' });
     }
-    updates.push(`nombre = $${idx++}`);
+    updates.push(`nombre = $${values.length + 1}`);
     values.push(nombre);
   }
   if (!updates.length) {
     return res.status(400).json({ error: 'Sin cambios' });
   }
-  values.push(numericId);
   try {
+    const idIdx = values.length + 1;
+    const countryIdx = values.length + 2;
     const row = await db.public.one(
-      `UPDATE parajes SET ${updates.join(', ')} WHERE id = $${idx} RETURNING *`,
-      values
+      `UPDATE parajes SET ${updates.join(', ')} WHERE id = $${idIdx} AND country_code = $${countryIdx} RETURNING *`,
+      [...values, numericId, countryCode]
     );
     res.json(row);
   } catch (error) {
@@ -112,26 +119,32 @@ router.patch('/parajes/:id', requireAuth, requireAdmin, async (req, res) => {
 router.delete('/parajes/:id', requireAuth, requireAdmin, async (req, res) => {
   const { id } = req.params;
   const numericId = Number(id);
+  const countryCode = resolveRequestCountry(req);
   if (!Number.isInteger(numericId) || numericId <= 0) {
     return res.status(400).json({ error: 'id inválido' });
   }
   try {
-    await db.public.none('UPDATE parcelas SET paraje_id = NULL WHERE paraje_id = $1', [numericId]);
-    await db.public.none('DELETE FROM parajes WHERE id = $1', [numericId]);
+    await db.public.none(
+      'UPDATE parcelas SET paraje_id = NULL WHERE paraje_id = $1 AND country_code = $2',
+      [numericId, countryCode]
+    );
+    await db.public.one('DELETE FROM parajes WHERE id = $1 AND country_code = $2 RETURNING id', [numericId, countryCode]);
     res.status(204).end();
   } catch (error) {
     res.status(500).json({ error: 'No se pudo eliminar el paraje' });
   }
 });
 
-router.post('/parajes/auto-assign', requireAuth, requireAdmin, async (_req, res) => {
+router.post('/parajes/auto-assign', requireAuth, requireAdmin, async (req, res) => {
+  const countryCode = resolveRequestCountry(req);
   try {
     const parcelas = await db.public.many(
-      'SELECT id, nombre, paraje_id FROM parcelas ORDER BY id'
+      'SELECT id, nombre, paraje_id FROM parcelas WHERE country_code = $1 ORDER BY id',
+      [countryCode]
     );
     const cache = new Map();
     let assigned = 0;
-    const ensureCache = async (nombre) => findOrCreateParaje(nombre, { cache });
+    const ensureCache = async (nombre) => findOrCreateParaje(nombre, { cache, countryCode });
 
     for (const parcela of parcelas) {
       if (parcela.paraje_id) continue;
@@ -142,11 +155,17 @@ router.post('/parajes/auto-assign', requireAuth, requireAdmin, async (_req, res)
       if (!parajeName || restParts.length === 0) continue;
       const paraje = await ensureCache(parajeName);
       if (!paraje) continue;
-      await db.public.none('UPDATE parcelas SET paraje_id = $1 WHERE id = $2', [paraje.id, parcela.id]);
+      await db.public.none(
+        'UPDATE parcelas SET paraje_id = $1 WHERE id = $2 AND country_code = $3',
+        [paraje.id, parcela.id, countryCode]
+      );
       assigned += 1;
     }
 
-    const totalParajesRow = await db.public.one('SELECT COUNT(*)::int AS total FROM parajes');
+    const totalParajesRow = await db.public.one(
+      'SELECT COUNT(*)::int AS total FROM parajes WHERE country_code = $1',
+      [countryCode]
+    );
     const totalParajes = Number(totalParajesRow.total) || cache.size;
     res.json({ assigned, parajesRegistrados: totalParajes });
   } catch (error) {

@@ -1,10 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const { resolveRequestCountry } = require('../utils/country');
 
 router.get('/sync/snapshot', async (req, res) => {
   if (!req.userId) return res.status(401).json({ error: 'No autenticado' });
   try {
+    const countryCode = resolveRequestCountry(req);
     const [
       parcelas,
       olivos,
@@ -18,10 +20,11 @@ router.get('/sync/snapshot', async (req, res) => {
     ] = await Promise.all([
       db.public.many(`SELECT par.*, pj.nombre AS paraje_nombre
                         FROM parcelas par
-                        LEFT JOIN parajes pj ON pj.id = par.paraje_id
-                       ORDER BY par.id`),
-      db.public.many('SELECT * FROM olivos ORDER BY id'),
-      db.public.many('SELECT * FROM palots ORDER BY id'),
+                        LEFT JOIN parajes pj ON pj.id = par.paraje_id AND pj.country_code = par.country_code
+                       WHERE par.country_code = $1
+                       ORDER BY par.id`, [countryCode]),
+      db.public.many('SELECT * FROM olivos WHERE country_code = $1 ORDER BY id', [countryCode]),
+      db.public.many('SELECT * FROM palots WHERE country_code = $1 ORDER BY id', [countryCode]),
       db.public.many(`SELECT pp.id,
                              par.id   AS parcela_id,
                              par.nombre AS parcela_nombre,
@@ -52,15 +55,23 @@ router.get('/sync/snapshot', async (req, res) => {
                                 WHERE pe.id_parcela = par.id
                              ), '[]'::json) AS parcela_etiquetas
                         FROM parcelas_palots pp
-                        JOIN parcelas par ON par.id = pp.id_parcela
-                        LEFT JOIN parajes pj ON pj.id = par.paraje_id
-                        JOIN palots   p   ON p.id = pp.id_palot
+                        JOIN parcelas par ON par.id = pp.id_parcela AND par.country_code = pp.country_code
+                        LEFT JOIN parajes pj ON pj.id = par.paraje_id AND pj.country_code = par.country_code
+                        JOIN palots   p   ON p.id = pp.id_palot AND p.country_code = pp.country_code
                         LEFT JOIN users  u ON u.id = pp.id_usuario
-                       ORDER BY pp.created_at DESC NULLS LAST, pp.id DESC`),
-      db.public.many('SELECT id, nombre FROM etiquetas ORDER BY nombre ASC'),
-      db.public.many('SELECT id_parcela, id_etiqueta FROM parcelas_etiquetas ORDER BY id_parcela, id_etiqueta'),
-      db.public.many('SELECT id, nombre FROM parajes ORDER BY nombre ASC'),
-      db.public.many('SELECT id, nombre, icono FROM activity_types ORDER BY nombre ASC'),
+                       WHERE pp.country_code = $1
+                       ORDER BY pp.created_at DESC NULLS LAST, pp.id DESC`, [countryCode]),
+      db.public.many('SELECT id, nombre FROM etiquetas WHERE country_code = $1 ORDER BY nombre ASC', [countryCode]),
+      db.public.many(
+        `SELECT pe.id_parcela, pe.id_etiqueta
+           FROM parcelas_etiquetas pe
+           JOIN parcelas par ON par.id = pe.id_parcela
+          WHERE par.country_code = $1
+          ORDER BY pe.id_parcela, pe.id_etiqueta`,
+        [countryCode]
+      ),
+      db.public.many('SELECT id, nombre FROM parajes WHERE country_code = $1 ORDER BY nombre ASC', [countryCode]),
+      db.public.many('SELECT id, nombre, icono FROM activity_types WHERE country_code = $1 ORDER BY nombre ASC', [countryCode]),
       db.public.many(
         `SELECT pa.id,
                 pa.parcela_id,
@@ -82,11 +93,13 @@ router.get('/sync/snapshot', async (req, res) => {
                 pa.created_by,
                 u.username AS created_by_username
            FROM parcela_activities pa
-           JOIN parcelas par ON par.id = pa.parcela_id
-           LEFT JOIN parajes pj ON pj.id = par.paraje_id
-           JOIN activity_types at ON at.id = pa.activity_type_id
+           JOIN parcelas par ON par.id = pa.parcela_id AND par.country_code = pa.country_code
+           LEFT JOIN parajes pj ON pj.id = par.paraje_id AND pj.country_code = par.country_code
+           JOIN activity_types at ON at.id = pa.activity_type_id AND at.country_code = pa.country_code
            LEFT JOIN users u ON u.id = pa.created_by
-          ORDER BY pa.created_at DESC, pa.id DESC`
+          WHERE pa.country_code = $1
+          ORDER BY pa.created_at DESC, pa.id DESC`,
+        [countryCode]
       ),
     ]);
     res.json({

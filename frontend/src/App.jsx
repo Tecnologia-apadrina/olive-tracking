@@ -56,6 +56,36 @@ const normalizeRole = (role) => {
   return mapped === 'metricas' ? 'metricas' : mapped;
 };
 
+const normalizeCountryCode = (country) => {
+  if (!country) return 'ES';
+  const normalized = String(country).trim().toUpperCase();
+  return normalized === 'PT' ? 'PT' : 'ES';
+};
+
+const COUNTRY_OPTIONS = [
+  { code: 'ES', label: 'España' },
+  { code: 'PT', label: 'Portugal' },
+];
+
+const COUNTRY_META = {
+  ES: {
+    codeGroupLabel: 'SIGPAC',
+    codeLabels: ['Municipio', 'Polígono', 'Parcela', 'Recinto'],
+    codePlaceholder: 'SIGPAC',
+    codeHeaderKeys: ['sigpac_municipio', 'sigpac_poligono', 'sigpac_parcela', 'sigpac_recinto'],
+  },
+  PT: {
+    codeGroupLabel: 'Código parcela',
+    codeLabels: ['Concelho', 'Freguesia', 'Secção', 'Matriz'],
+    codePlaceholder: 'Concelho-Freguesia-Secção-Matriz',
+    codeHeaderKeys: ['concelho', 'freguesia', 'seccao', 'matriz'],
+  },
+};
+
+const PARCEL_CODE_FIELDS = ['sigpac_municipio', 'sigpac_poligono', 'sigpac_parcela', 'sigpac_recinto'];
+
+const getCountryMeta = (code) => COUNTRY_META[normalizeCountryCode(code)] || COUNTRY_META.ES;
+
 const dateKeyLocal = (dt) => {
   if (!dt) return 'sin-fecha';
   const d = new Date(dt);
@@ -83,6 +113,7 @@ function App() {
   const [authPass, setAuthPass] = useState('');
   const [authToken, setAuthToken] = useState(''); // base64 username:password
   const [authRole, setAuthRole] = useState('');
+  const [authCountry, setAuthCountry] = useState('ES');
   const [view, setView] = useState('main'); // main | users | olivos | parcelas | palots
   const [palotInput, setPalotInput] = useState('');
   const [palotList, setPalotList] = useState([]);
@@ -134,10 +165,12 @@ function App() {
   const [tagDeleteStatus, setTagDeleteStatus] = useState({});
   const [activityTypes, setActivityTypes] = useState([]);
   const [activitiesFeed, setActivitiesFeed] = useState([]);
+  const countryMeta = getCountryMeta(authCountry);
   const syncingRef = useRef(false);
   const syncTimeoutRef = useRef(null);
   const relationsRefreshCounter = useRef(0);
   const authRoleRef = useRef('');
+  const lastSessionRef = useRef({ username: '', country: 'ES' });
   authRoleRef.current = authRole;
   const refreshActivitiesOnly = useCallback(async () => {
     try {
@@ -163,6 +196,7 @@ function App() {
         let token = session && session.token ? session.token : '';
         let username = session && session.username ? session.username : '';
         let role = session && session.role ? session.role : '';
+        let country = session && session.country ? session.country : '';
         if (!token) {
           const legacyToken = localStorage.getItem('authToken');
           const legacyUser = localStorage.getItem('authUser');
@@ -170,13 +204,24 @@ function App() {
           username = legacyUser || username;
           if (legacyToken) {
             const safeRole = normalizeRole(role);
-            saveAuthSession({ token: legacyToken, username: legacyUser || '', role: safeRole || '' }).catch(() => {});
+            const normalizedCountry = normalizeCountryCode(country || 'ES');
+            saveAuthSession({
+              token: legacyToken,
+              username: legacyUser || '',
+              role: safeRole || '',
+              country: normalizedCountry,
+            }).catch(() => {});
           }
         }
         if (!cancelled && token) {
-          setAuthToken(token);
-          setAuthUser(username || '');
-          setAuthRole(normalizeRole(role));
+          await applySession({
+            username: username || '',
+            token,
+            role,
+            country: country || 'ES',
+            persist: false,
+            resetOfflineOnChange: false,
+          });
         }
         const last = await getLastSnapshotIso();
         if (!cancelled && last) setLastSync(last);
@@ -260,18 +305,28 @@ function App() {
     return () => { cancelled = true; };
   }, [isOnline]);
   const authHeaders = authToken ? { Authorization: `Basic ${authToken}` } : {};
-  const applySession = async ({ username, token, role, persist = true }) => {
-    setAuthToken(token);
-    setAuthUser(username);
+  const applySession = async ({ username, token, role, country, persist = true, resetOfflineOnChange = true }) => {
+    const safeUsername = username || '';
     const safeRole = normalizeRole(role);
+    const normalizedCountry = normalizeCountryCode(country || authCountry);
+    if (resetOfflineOnChange) {
+      const last = lastSessionRef.current;
+      if (last.username && (last.username !== safeUsername || last.country !== normalizedCountry)) {
+        await clearAllOfflineData().catch(() => {});
+      }
+    }
+    lastSessionRef.current = { username: safeUsername, country: normalizedCountry };
+    setAuthToken(token);
+    setAuthUser(safeUsername);
     setAuthRole(safeRole);
+    setAuthCountry(normalizedCountry);
     if (persist) {
       try {
         localStorage.setItem('authToken', token);
-        localStorage.setItem('authUser', username);
+        localStorage.setItem('authUser', safeUsername);
       } catch (_) {}
       try {
-        await saveAuthSession({ token, username, role: safeRole || '' });
+        await saveAuthSession({ token, username: safeUsername, role: safeRole || '', country: normalizedCountry });
       } catch (_) {}
     }
   };
@@ -312,7 +367,12 @@ function App() {
       const res = await fetch(`${apiBase}/me`, { headers: { Authorization: `Basic ${token}` } });
       if (!res.ok) throw new Error('Credenciales no válidas');
       const me = await res.json();
-      await applySession({ username: u, token, role: me && me.role ? me.role : '' });
+      await applySession({
+        username: u,
+        token,
+        role: me && me.role ? me.role : '',
+        country: me && me.country_code ? me.country_code : 'ES',
+      });
       setAuthPass('');
       await runSync();
     } catch (err) {
@@ -335,6 +395,7 @@ function App() {
     setAuthUser('');
     setAuthPass('');
     setAuthRole('');
+    setAuthCountry('ES');
     setPendingCount(0);
     setLastSync(null);
     setAllRels([]);
@@ -351,6 +412,7 @@ function App() {
       localStorage.removeItem('authToken');
       localStorage.removeItem('authUser');
     } catch (_) {}
+    lastSessionRef.current = { username: '', country: 'ES' };
     clearAuthSession().catch(() => {});
     clearAllOfflineData().catch(() => {});
   };
@@ -1235,15 +1297,13 @@ function App() {
 
   const exportCsv = (mode) => {
     // Columnas: codigo_palot, id_parcela, nombre_parcela, paraje, sigpac_municipio, sigpac_poligono, sigpac_parcela, sigpac_recinto, parcela_variedad, parcela_porcentaje, kgs, fecha_creacion, creado_por, etiquetas, notas
+    const codeHeaders = getCountryMeta(authCountry).codeHeaderKeys;
     const header = [
       'codigo_palot',
       'id_parcela',
       'nombre_parcela',
       'paraje',
-      'sigpac_municipio',
-      'sigpac_poligono',
-      'sigpac_parcela',
-      'sigpac_recinto',
+      ...codeHeaders,
       'parcela_variedad',
       'parcela_porcentaje',
       'parcela_num_olivos',
@@ -1817,10 +1877,12 @@ function App() {
                   </button>
                   {expandedId === r.id && (
                     <>
-                      <span className="kv-label">Municipio</span><span className="kv-value">{r.sigpac_municipio || '-'}</span>
-                      <span className="kv-label">Polígono</span><span className="kv-value">{r.sigpac_poligono || '-'}</span>
-                      <span className="kv-label">Parcela</span><span className="kv-value">{r.sigpac_parcela || '-'}</span>
-                      <span className="kv-label">Recinto</span><span className="kv-value">{r.sigpac_recinto || '-'}</span>
+                      {PARCEL_CODE_FIELDS.map((field, idx) => (
+                        <React.Fragment key={`${r.id || 0}-${field}`}>
+                          <span className="kv-label">{countryMeta.codeLabels[idx]}</span>
+                          <span className="kv-value">{r[field] || '-'}</span>
+                        </React.Fragment>
+                      ))}
                       <span className="kv-label">Variedad</span><span className="kv-value">{r.parcela_variedad || '-'}</span>
                       <span className="kv-label">Nº olivos</span><span className="kv-value">{r.parcela_num_olivos != null ? r.parcela_num_olivos : '-'}</span>
                       <span className="kv-label">Hectáreas</span><span className="kv-value">{r.parcela_hectareas != null ? r.parcela_hectareas : '-'}</span>
@@ -1910,7 +1972,7 @@ function App() {
                   <a className={`btn ${view === 'metrics' ? '' : 'btn-outline'}`} href="/metrics" onClick={(e) => { e.preventDefault(); handleNav('/metrics'); }}>Métricas</a>
                 )}
               </div>
-              {(authRole === 'admin' || authRole === 'metricas') && (
+              {authRole === 'admin' && (
                 <div className="admin-menu">
                   <button
                     type="button"
@@ -2244,7 +2306,7 @@ function App() {
       )}
 
       {authToken && view === 'parcelas' && (
-        <ParcelasView apiBase={apiBase} authHeaders={authHeaders} />
+        <ParcelasView apiBase={apiBase} authHeaders={authHeaders} countryCode={authCountry} />
       )}
 
       {authToken && authRole === 'admin' && view === 'parajes' && (
@@ -4087,7 +4149,7 @@ function MetricsView({ apiBase, authHeaders }) {
                   type="text"
                   value={municipioSearch}
                   onChange={(event) => setMunicipioSearch(event.target.value)}
-                  placeholder="Busca por nombre o código SIGPAC"
+                  placeholder={`Busca por nombre o ${countryMeta.codePlaceholder}`}
                 />
               </div>
               <div className="metrics-filter-actions">
@@ -4644,6 +4706,7 @@ function UsersView({ apiBase, authHeaders, appVersion, dbUrl, authUser, authRole
   const [u, setU] = React.useState('');
   const [p, setP] = React.useState('');
   const [role, setRole] = React.useState('campo');
+  const [country, setCountry] = React.useState('ES');
   const [drafts, setDrafts] = React.useState({}); // {id: {username, role, password}}
   const [rowSaveStatus, setRowSaveStatus] = React.useState({}); // {id: 'saving'}
 
@@ -4653,10 +4716,23 @@ function UsersView({ apiBase, authHeaders, appVersion, dbUrl, authUser, authRole
       const res = await fetch(`${apiBase}/users`, { headers: { ...authHeaders } });
       if (!res.ok) throw new Error('No autorizado o error');
       const data = await res.json();
-      const arr = Array.isArray(data) ? data.map(us => ({ ...us, role: normalizeRole(us.role) })) : [];
+      const arr = Array.isArray(data)
+        ? data.map((us) => ({
+            ...us,
+            role: normalizeRole(us.role),
+            country_code: normalizeCountryCode(us.country_code),
+          }))
+        : [];
       setUsers(arr);
       const d = {};
-      for (const us of arr) d[us.id] = { username: us.username, role: normalizeRole(us.role), password: '' };
+      for (const us of arr) {
+        d[us.id] = {
+          username: us.username,
+          role: normalizeRole(us.role),
+          password: '',
+          country_code: us.country_code || 'ES',
+        };
+      }
       setDrafts(d);
       setStatus('ready');
     } catch (e) {
@@ -4669,10 +4745,10 @@ function UsersView({ apiBase, authHeaders, appVersion, dbUrl, authUser, authRole
     const res = await fetch(`${apiBase}/users`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders },
-      body: JSON.stringify({ username: u, password: p, role })
+      body: JSON.stringify({ username: u, password: p, role, country_code: country })
     });
     if (res.ok) {
-      setU(''); setP(''); setRole('campo');
+      setU(''); setP(''); setRole('campo'); setCountry('ES');
       load();
     } else {
       alert('No se pudo crear');
@@ -4689,7 +4765,7 @@ function UsersView({ apiBase, authHeaders, appVersion, dbUrl, authUser, authRole
     if (rowSaveStatus[id] === 'saving') return;
     setRowSaveStatus((prev) => ({ ...prev, [id]: 'saving' }));
     const d = drafts[id] || {};
-    const payload = { username: d.username, role: d.role };
+    const payload = { username: d.username, role: d.role, country_code: d.country_code };
     if (d.password && d.password.trim() !== '') payload.password = d.password;
     try {
       const res = await fetch(`${apiBase}/users/${id}`, {
@@ -4699,9 +4775,21 @@ function UsersView({ apiBase, authHeaders, appVersion, dbUrl, authUser, authRole
       });
       if (res.ok) {
         const updated = await res.json();
-        const normalized = { ...updated, role: normalizeRole(updated.role) };
+        const normalized = {
+          ...updated,
+          role: normalizeRole(updated.role),
+          country_code: normalizeCountryCode(updated.country_code),
+        };
         setUsers(list => list.map(x => x.id === id ? normalized : x));
-        setDrafts(d0 => ({ ...d0, [id]: { username: normalized.username, role: normalized.role, password: '' } }));
+        setDrafts(d0 => ({
+          ...d0,
+          [id]: {
+            username: normalized.username,
+            role: normalized.role,
+            password: '',
+            country_code: normalized.country_code,
+          },
+        }));
       } else {
         alert('No se pudo guardar cambios');
       }
@@ -4730,6 +4818,11 @@ function UsersView({ apiBase, authHeaders, appVersion, dbUrl, authUser, authRole
         <div className="controls">
           <input style={{ width: 160 }} placeholder="usuario" value={u} onChange={e => setU(e.target.value)} />
           <input style={{ width: 160 }} placeholder="contraseña" type="password" value={p} onChange={e => setP(e.target.value)} />
+          <select value={country} onChange={e => setCountry(e.target.value)}>
+            {COUNTRY_OPTIONS.map((opt) => (
+              <option key={opt.code} value={opt.code}>{opt.label}</option>
+            ))}
+          </select>
           <select value={role} onChange={e => setRole(e.target.value)}>
             <option value="campo">campo</option>
             <option value="patio">patio</option>
@@ -4754,6 +4847,11 @@ function UsersView({ apiBase, authHeaders, appVersion, dbUrl, authUser, authRole
                 <option value="molino">molino</option>
                 <option value="metricas">metricas</option>
                 <option value="admin">admin</option>
+              </select>
+              <select value={coalesce(drafts[us.id] && drafts[us.id].country_code, 'ES')} onChange={e => setDrafts(d => ({ ...d, [us.id]: { ...(d[us.id]||{}), country_code: e.target.value } }))}>
+                {COUNTRY_OPTIONS.map((opt) => (
+                  <option key={opt.code} value={opt.code}>{opt.label}</option>
+                ))}
               </select>
               <input style={{ width: 160 }} placeholder="nueva contraseña" type="password" value={coalesce(drafts[us.id] && drafts[us.id].password, '')} onChange={e => setDrafts(d => ({ ...d, [us.id]: { ...(d[us.id]||{}), password: e.target.value } }))} />
             </div>
@@ -4898,7 +4996,7 @@ function OlivosView({ apiBase, authHeaders }) {
   );
 }
 
-function ParcelasView({ apiBase, authHeaders }) {
+function ParcelasView({ apiBase, authHeaders, countryCode = 'ES' }) {
   const [rows, setRows] = React.useState([]);
   const [status, setStatus] = React.useState('idle');
   const [pCsv, setPCsv] = React.useState('');
@@ -4912,6 +5010,7 @@ function ParcelasView({ apiBase, authHeaders }) {
   const [deleteMessage, setDeleteMessage] = React.useState({});
   const [collapsedGroups, setCollapsedGroups] = React.useState({});
   const [groupByParaje, setGroupByParaje] = React.useState(false);
+  const countryMeta = getCountryMeta(countryCode);
   const load = async () => {
     setStatus('loading');
     try {
@@ -5140,7 +5239,7 @@ function ParcelasView({ apiBase, authHeaders }) {
             ) : (
               <><strong>Paraje:</strong> sin asignar · </>
             )}
-            interno: {p.nombre_interno || '-'} · olivos: {coalesce(p.num_olivos, '-')} · hectáreas: {coalesce(p.hectareas, '-')} · porcentaje actual: {coalesce(p.porcentaje, '-')} · variedad: {p.variedad || '-'} · SIGPAC {p.sigpac_municipio || '-'}/{p.sigpac_poligono || '-'}/{p.sigpac_parcela || '-'}/{p.sigpac_recinto || '-'}
+            interno: {p.nombre_interno || '-'} · olivos: {coalesce(p.num_olivos, '-')} · hectáreas: {coalesce(p.hectareas, '-')} · porcentaje actual: {coalesce(p.porcentaje, '-')} · variedad: {p.variedad || '-'} · {countryMeta.codeGroupLabel} {PARCEL_CODE_FIELDS.map((field) => p[field] || '-').join('/')}
           </div>
           <div className="controls" style={{ marginTop: '0.35rem', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center' }}>
             <span>Nuevo porcentaje:</span>

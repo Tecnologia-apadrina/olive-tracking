@@ -9,13 +9,15 @@ const SCHEMA_SQL_BASE = `
   CREATE TABLE IF NOT EXISTS parajes (
     id SERIAL PRIMARY KEY,
     nombre TEXT NOT NULL,
-    UNIQUE(nombre)
+    country_code TEXT NOT NULL DEFAULT 'ES',
+    UNIQUE(nombre, country_code)
   );
 
   CREATE TABLE IF NOT EXISTS parcelas (
     id SERIAL PRIMARY KEY,
     nombre TEXT,
     nombre_interno TEXT,
+    country_code TEXT NOT NULL DEFAULT 'ES',
     sigpac_municipio TEXT,
     sigpac_poligono TEXT,
     sigpac_parcela TEXT,
@@ -29,7 +31,8 @@ const SCHEMA_SQL_BASE = `
 
   CREATE TABLE IF NOT EXISTS olivos (
     id SERIAL PRIMARY KEY,
-    id_parcela INTEGER REFERENCES parcelas(id)
+    id_parcela INTEGER REFERENCES parcelas(id),
+    country_code TEXT NOT NULL DEFAULT 'ES'
   );
 
   CREATE TABLE IF NOT EXISTS palots (
@@ -37,7 +40,8 @@ const SCHEMA_SQL_BASE = `
     codigo TEXT,
     id_usuario INTEGER,
     kgs NUMERIC,
-    procesado BOOLEAN DEFAULT false
+    procesado BOOLEAN DEFAULT false,
+    country_code TEXT NOT NULL DEFAULT 'ES'
   );
 
   CREATE TABLE IF NOT EXISTS parcelas_palots (
@@ -48,19 +52,23 @@ const SCHEMA_SQL_BASE = `
     kgs NUMERIC,
     reservado_aderezo BOOLEAN DEFAULT false,
     notas TEXT,
-    created_at TIMESTAMPTZ DEFAULT now()
+    created_at TIMESTAMPTZ DEFAULT now(),
+    country_code TEXT NOT NULL DEFAULT 'ES'
   );
 
   CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
     username TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
-    role TEXT DEFAULT 'campo'
+    role TEXT DEFAULT 'campo',
+    country_code TEXT NOT NULL DEFAULT 'ES'
   );
 
   CREATE TABLE IF NOT EXISTS etiquetas (
     id SERIAL PRIMARY KEY,
-    nombre TEXT UNIQUE NOT NULL
+    nombre TEXT NOT NULL,
+    country_code TEXT NOT NULL DEFAULT 'ES',
+    UNIQUE(nombre, country_code)
   );
 
   CREATE TABLE IF NOT EXISTS parcelas_etiquetas (
@@ -73,7 +81,8 @@ const SCHEMA_SQL_BASE = `
     id SERIAL PRIMARY KEY,
     nombre TEXT NOT NULL,
     icono TEXT DEFAULT '',
-    UNIQUE(nombre)
+    country_code TEXT NOT NULL DEFAULT 'ES',
+    UNIQUE(nombre, country_code)
   );
 
   CREATE TABLE IF NOT EXISTS parcela_activities (
@@ -84,7 +93,8 @@ const SCHEMA_SQL_BASE = `
     personas INTEGER,
     notas TEXT,
     created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
-    created_at TIMESTAMPTZ DEFAULT now()
+    created_at TIMESTAMPTZ DEFAULT now(),
+    country_code TEXT NOT NULL DEFAULT 'ES'
   );
 
   CREATE INDEX IF NOT EXISTS idx_parcela_activities_parcela ON parcela_activities(parcela_id);
@@ -99,6 +109,9 @@ const SCHEMA_SQL_ALTER = `
     UNIQUE(nombre)
   );
   ALTER TABLE IF EXISTS parajes DROP COLUMN IF EXISTS propietario;
+  ALTER TABLE IF EXISTS parajes ADD COLUMN IF NOT EXISTS country_code TEXT NOT NULL DEFAULT 'ES';
+  ALTER TABLE IF EXISTS parajes DROP CONSTRAINT IF EXISTS parajes_nombre_key;
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_parajes_nombre_country ON parajes(nombre, country_code);
   ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS sigpac_municipio TEXT;
   ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS sigpac_poligono TEXT;
   ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS sigpac_parcela TEXT;
@@ -108,20 +121,28 @@ const SCHEMA_SQL_ALTER = `
   ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS porcentaje NUMERIC;
   ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS num_olivos INTEGER;
   ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS hectareas NUMERIC;
+  ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS country_code TEXT NOT NULL DEFAULT 'ES';
   ALTER TABLE IF EXISTS parcelas ADD COLUMN IF NOT EXISTS paraje_id INTEGER REFERENCES parajes(id) ON DELETE SET NULL;
   ALTER TABLE IF EXISTS parcelas DROP COLUMN IF EXISTS id_usuario;
   ALTER TABLE IF EXISTS parcelas_palots ADD COLUMN IF NOT EXISTS kgs NUMERIC;
   ALTER TABLE IF EXISTS parcelas_palots ADD COLUMN IF NOT EXISTS reservado_aderezo BOOLEAN DEFAULT false;
   ALTER TABLE IF EXISTS parcelas_palots ADD COLUMN IF NOT EXISTS notas TEXT;
   ALTER TABLE IF EXISTS parcelas_palots ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
+  ALTER TABLE IF EXISTS parcelas_palots ADD COLUMN IF NOT EXISTS country_code TEXT NOT NULL DEFAULT 'ES';
   ALTER TABLE IF EXISTS palots ADD COLUMN IF NOT EXISTS kgs NUMERIC;
   ALTER TABLE IF EXISTS palots ADD COLUMN IF NOT EXISTS procesado BOOLEAN DEFAULT false;
+  ALTER TABLE IF EXISTS palots ADD COLUMN IF NOT EXISTS country_code TEXT NOT NULL DEFAULT 'ES';
   ALTER TABLE IF EXISTS olivos DROP COLUMN IF EXISTS variedad;
   ALTER TABLE IF EXISTS olivos DROP COLUMN IF EXISTS id_usuario;
+  ALTER TABLE IF EXISTS olivos ADD COLUMN IF NOT EXISTS country_code TEXT NOT NULL DEFAULT 'ES';
+  ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS country_code TEXT NOT NULL DEFAULT 'ES';
   CREATE TABLE IF NOT EXISTS etiquetas (
     id SERIAL PRIMARY KEY,
     nombre TEXT UNIQUE NOT NULL
   );
+  ALTER TABLE IF EXISTS etiquetas ADD COLUMN IF NOT EXISTS country_code TEXT NOT NULL DEFAULT 'ES';
+  ALTER TABLE IF EXISTS etiquetas DROP CONSTRAINT IF EXISTS etiquetas_nombre_key;
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_etiquetas_nombre_country ON etiquetas(nombre, country_code);
   CREATE TABLE IF NOT EXISTS parcelas_etiquetas (
     id_parcela INTEGER REFERENCES parcelas(id) ON DELETE CASCADE,
     id_etiqueta INTEGER REFERENCES etiquetas(id) ON DELETE CASCADE,
@@ -133,6 +154,9 @@ const SCHEMA_SQL_ALTER = `
     icono TEXT DEFAULT '',
     UNIQUE(nombre)
   );
+  ALTER TABLE IF EXISTS activity_types ADD COLUMN IF NOT EXISTS country_code TEXT NOT NULL DEFAULT 'ES';
+  ALTER TABLE IF EXISTS activity_types DROP CONSTRAINT IF EXISTS activity_types_nombre_key;
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_types_nombre_country ON activity_types(nombre, country_code);
   CREATE TABLE IF NOT EXISTS parcela_activities (
     id SERIAL PRIMARY KEY,
     parcela_id INTEGER REFERENCES parcelas(id) ON DELETE CASCADE,
@@ -143,6 +167,7 @@ const SCHEMA_SQL_ALTER = `
     created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ DEFAULT now()
   );
+  ALTER TABLE IF EXISTS parcela_activities ADD COLUMN IF NOT EXISTS country_code TEXT NOT NULL DEFAULT 'ES';
   CREATE INDEX IF NOT EXISTS idx_parcela_activities_parcela ON parcela_activities(parcela_id);
   CREATE INDEX IF NOT EXISTS idx_parcela_activities_created_at ON parcela_activities(created_at);
 `;
@@ -164,11 +189,12 @@ if (connectionString) {
     const adminUser = process.env.ADMIN_USER || 'admin';
     const adminPass = process.env.ADMIN_PASS || 'admin';
     const hash = hashPassword(adminPass);
+    const adminCountry = (process.env.ADMIN_COUNTRY || 'ES').toUpperCase();
     await pool.query(
-      `INSERT INTO users(username, password_hash, role)
-       VALUES($1, $2, 'admin')
+      `INSERT INTO users(username, password_hash, role, country_code)
+       VALUES($1, $2, 'admin', $3)
        ON CONFLICT (username) DO NOTHING`,
-      [adminUser, hash]
+      [adminUser, hash, adminCountry]
     );
   };
   // Fire and forget; routes will work even if this resolves slightly later
@@ -201,8 +227,10 @@ if (connectionString) {
     const adminPass = process.env.ADMIN_PASS || 'admin';
     const hash = hashPassword(adminPass);
     const esc = (s) => String(s).replace(/'/g, "''");
+    const adminCountry = (process.env.ADMIN_COUNTRY || 'ES').toUpperCase();
     mem.public.none(
-      `INSERT INTO users(username, password_hash, role) VALUES('${esc(adminUser)}', '${esc(hash)}', 'admin')`
+      `INSERT INTO users(username, password_hash, role, country_code)
+       VALUES('${esc(adminUser)}', '${esc(hash)}', 'admin', '${esc(adminCountry)}')`
     );
   } catch (_) {}
 

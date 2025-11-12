@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const { resolveRequestCountry } = require('../utils/country');
 
 const normalizeEtiquetaIds = (value) => {
   if (!value) return [];
@@ -15,7 +16,7 @@ const normalizeEtiquetaIds = (value) => {
   return normalized;
 };
 
-const fetchParcelTags = async (parcelaId) => {
+const fetchParcelTags = async (parcelaId, countryCode) => {
   if (!Number.isInteger(parcelaId)) return [];
   try {
     const rows = await db.public.many(
@@ -23,8 +24,9 @@ const fetchParcelTags = async (parcelaId) => {
          FROM parcelas_etiquetas pe
          JOIN etiquetas e ON e.id = pe.id_etiqueta
         WHERE pe.id_parcela = $1
+          AND e.country_code = $2
         ORDER BY e.nombre ASC`,
-      [parcelaId]
+      [parcelaId, countryCode]
     );
     return rows;
   } catch (_) {
@@ -32,7 +34,7 @@ const fetchParcelTags = async (parcelaId) => {
   }
 };
 
-const setParcelTags = async (parcelaId, etiquetaIds) => {
+const setParcelTags = async (parcelaId, etiquetaIds, countryCode) => {
   if (!Number.isInteger(parcelaId)) return [];
   const ids = normalizeEtiquetaIds(etiquetaIds);
   if (!ids.length) {
@@ -40,8 +42,8 @@ const setParcelTags = async (parcelaId, etiquetaIds) => {
     return [];
   }
   const existing = await db.public.many(
-    'SELECT id FROM etiquetas WHERE id = ANY($1::int[])',
-    [ids]
+    'SELECT id FROM etiquetas WHERE id = ANY($1::int[]) AND country_code = $2',
+    [ids, countryCode]
   );
   const validIds = existing.map((row) => Number(row.id)).filter((id) => Number.isInteger(id));
   await db.public.none('DELETE FROM parcelas_etiquetas WHERE id_parcela = $1', [parcelaId]);
@@ -54,10 +56,10 @@ const setParcelTags = async (parcelaId, etiquetaIds) => {
       [parcelaId, ...validIds]
     );
   }
-  return fetchParcelTags(parcelaId);
+  return fetchParcelTags(parcelaId, countryCode);
 };
 
-const fetchRelationWithDetails = async (relationId) => {
+const fetchRelationWithDetails = async (relationId, countryCode) => {
   return db.public.one(
     `SELECT pp.id,
             par.id   AS parcela_id,
@@ -89,12 +91,12 @@ const fetchRelationWithDetails = async (relationId) => {
                WHERE pe.id_parcela = par.id
             ), '[]'::json) AS parcela_etiquetas
        FROM parcelas_palots pp
-       JOIN parcelas par ON par.id = pp.id_parcela
-       LEFT JOIN parajes pj ON pj.id = par.paraje_id
-       JOIN palots   p   ON p.id = pp.id_palot
+       JOIN parcelas par ON par.id = pp.id_parcela AND par.country_code = pp.country_code
+       LEFT JOIN parajes pj ON pj.id = par.paraje_id AND pj.country_code = par.country_code
+       JOIN palots   p   ON p.id = pp.id_palot AND p.country_code = pp.country_code
        LEFT JOIN users  u ON u.id = pp.id_usuario
-      WHERE pp.id = $1`,
-    [relationId]
+      WHERE pp.id = $1 AND pp.country_code = $2`,
+    [relationId, countryCode]
   );
 };
 
@@ -128,8 +130,13 @@ const toBool = (value) => {
 // Assign a palot to a parcela
 router.post('/parcelas/:parcelaId/palots', async (req, res) => {
   if (!req.userId) return res.status(401).json({ error: 'No autenticado' });
+  const countryCode = resolveRequestCountry(req);
   const { parcelaId } = req.params;
   const { palot_id, kgs, reservado_aderezo, notas, etiquetas } = req.body || {};
+  const parcelaNumericId = Number(parcelaId);
+  if (!Number.isInteger(parcelaNumericId) || parcelaNumericId <= 0) {
+    return res.status(400).json({ error: 'parcelaId inválido' });
+  }
   if (!palot_id) {
     return res.status(400).json({ error: 'palot_id requerido' });
   }
@@ -137,16 +144,44 @@ router.post('/parcelas/:parcelaId/palots', async (req, res) => {
   if (parsedKgs.error) {
     return res.status(400).json({ error: parsedKgs.error });
   }
+  let palotNumericId = Number(palot_id);
+  if (!Number.isInteger(palotNumericId) || palotNumericId <= 0) {
+    return res.status(400).json({ error: 'palot_id inválido' });
+  }
+  try {
+    await db.public.one(
+      'SELECT id FROM parcelas WHERE id = $1 AND country_code = $2',
+      [parcelaNumericId, countryCode]
+    );
+  } catch (_) {
+    return res.status(404).json({ error: 'Parcela no encontrada' });
+  }
+  try {
+    await db.public.one(
+      'SELECT id FROM palots WHERE id = $1 AND country_code = $2',
+      [palotNumericId, countryCode]
+    );
+  } catch (_) {
+    return res.status(404).json({ error: 'Palot no encontrado' });
+  }
   const userId = req.userId || null;
   const reservadoValue = toBool(reservado_aderezo);
   const result = await db.public.one(
-    'INSERT INTO parcelas_palots(id_parcela, id_palot, id_usuario, kgs, reservado_aderezo, notas) VALUES($1, $2, $3, $4, $5, $6) RETURNING *',
-    [parcelaId, palot_id, userId, parsedKgs.value, reservadoValue, notas ?? null]
+    `INSERT INTO parcelas_palots(
+       id_parcela,
+       id_palot,
+       id_usuario,
+       kgs,
+       reservado_aderezo,
+       notas,
+       country_code
+     ) VALUES($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+    [parcelaNumericId, palotNumericId, userId, parsedKgs.value, reservadoValue, notas ?? null, countryCode]
   );
   let tags = [];
   if (etiquetas !== undefined) {
     try {
-      tags = await setParcelTags(Number(parcelaId), etiquetas);
+      tags = await setParcelTags(parcelaNumericId, etiquetas, countryCode);
     } catch (_) {
       // Silently ignore tag assignment errors but continue
       tags = [];
@@ -154,7 +189,7 @@ router.post('/parcelas/:parcelaId/palots', async (req, res) => {
   }
   let enriched;
   try {
-    enriched = await fetchRelationWithDetails(result.id);
+    enriched = await fetchRelationWithDetails(result.id, countryCode);
   } catch (_) {
     enriched = { ...result, parcela_etiquetas: tags };
   }
@@ -168,10 +203,21 @@ router.post('/parcelas/:parcelaId/palots', async (req, res) => {
 router.get('/parcelas/:parcelaId/palots', async (req, res) => {
   if (!req.userId) return res.status(401).json({ error: 'No autenticado' });
   const { parcelaId } = req.params;
+  const countryCode = resolveRequestCountry(req);
+  const parcelaNumericId = Number(parcelaId);
+  if (!Number.isInteger(parcelaNumericId) || parcelaNumericId <= 0) {
+    return res.status(400).json({ error: 'parcelaId inválido' });
+  }
   try {
     const rows = await db.public.many(
-      'SELECT p.* FROM palots p JOIN parcelas_palots pp ON p.id = pp.id_palot WHERE pp.id_parcela = $1',
-      [parcelaId]
+      `SELECT p.*
+         FROM palots p
+         JOIN parcelas_palots pp ON p.id = pp.id_palot
+        WHERE pp.id_parcela = $1
+          AND pp.country_code = $2
+          AND p.country_code = $2
+        ORDER BY p.id`,
+      [parcelaNumericId, countryCode]
     );
     res.json(rows);
   } catch (e) {
@@ -183,9 +229,15 @@ router.get('/parcelas/:parcelaId/palots', async (req, res) => {
 router.delete('/parcelas/:parcelaId/palots/:palotId', async (req, res) => {
   if (!req.userId) return res.status(401).json({ error: 'No autenticado' });
   const { parcelaId, palotId } = req.params;
+  const countryCode = resolveRequestCountry(req);
+  const parcelaNumericId = Number(parcelaId);
+  const palotNumericId = Number(palotId);
+  if (!Number.isInteger(parcelaNumericId) || !Number.isInteger(palotNumericId)) {
+    return res.status(400).json({ error: 'IDs inválidos' });
+  }
   await db.public.none(
-    'DELETE FROM parcelas_palots WHERE id_parcela = $1 AND id_palot = $2',
-    [parcelaId, palotId]
+    'DELETE FROM parcelas_palots WHERE id_parcela = $1 AND id_palot = $2 AND country_code = $3',
+    [parcelaNumericId, palotNumericId, countryCode]
   );
   res.status(204).end();
 });
@@ -193,6 +245,7 @@ router.delete('/parcelas/:parcelaId/palots/:palotId', async (req, res) => {
 // List all parcela–palot relations
 router.get('/parcelas-palots', async (req, res) => {
   if (!req.userId) return res.status(401).json({ error: 'No autenticado' });
+  const countryCode = resolveRequestCountry(req);
   try {
     const rows = await db.public.many(
       `SELECT pp.id,
@@ -225,11 +278,13 @@ router.get('/parcelas-palots', async (req, res) => {
                  WHERE pe.id_parcela = par.id
               ), '[]'::json) AS parcela_etiquetas
          FROM parcelas_palots pp
-         JOIN parcelas par ON par.id = pp.id_parcela
-         LEFT JOIN parajes pj ON pj.id = par.paraje_id
-         JOIN palots   p   ON p.id = pp.id_palot
+         JOIN parcelas par ON par.id = pp.id_parcela AND par.country_code = pp.country_code
+         LEFT JOIN parajes pj ON pj.id = par.paraje_id AND pj.country_code = par.country_code
+         JOIN palots   p   ON p.id = pp.id_palot AND p.country_code = pp.country_code
          LEFT JOIN users  u ON u.id = pp.id_usuario
-        ORDER BY pp.created_at DESC NULLS LAST, pp.id DESC`
+        WHERE pp.country_code = $1
+        ORDER BY pp.created_at DESC NULLS LAST, pp.id DESC`,
+      [countryCode]
     );
     res.json(rows);
   } catch (e) {
@@ -242,7 +297,11 @@ router.patch('/parcelas-palots/:id', async (req, res) => {
   if (!req.userId) return res.status(401).json({ error: 'No autenticado' });
   const { id } = req.params;
   const { kgs, reservado_aderezo, notas, etiquetas } = req.body || {};
-
+  const countryCode = resolveRequestCountry(req);
+  const relationId = Number(id);
+  if (!Number.isInteger(relationId) || relationId <= 0) {
+    return res.status(400).json({ error: 'ID inválido' });
+  }
   const fields = [];
   const params = [];
   let idx = 1;
@@ -275,24 +334,28 @@ router.patch('/parcelas-palots/:id', async (req, res) => {
   try {
     let updated;
     if (fields.length) {
-      params.push(id);
+      params.push(relationId);
+      params.push(countryCode);
       await db.public.one(
-        `UPDATE parcelas_palots SET ${fields.join(', ')} WHERE id = $${idx} RETURNING id`,
+        `UPDATE parcelas_palots
+            SET ${fields.join(', ')}
+          WHERE id = $${idx} AND country_code = $${idx + 1}
+          RETURNING id`,
         params
       );
     }
-    updated = await fetchRelationWithDetails(id);
+    updated = await fetchRelationWithDetails(relationId, countryCode);
     const rawParcelaId = Number(updated?.parcela_id);
     const parcelaId = Number.isInteger(rawParcelaId) ? rawParcelaId : null;
     let tags = [];
     if (etiquetasProvided && parcelaId !== null) {
       try {
-        tags = await setParcelTags(parcelaId, etiquetas);
+        tags = await setParcelTags(parcelaId, etiquetas, countryCode);
       } catch (_) {
-        tags = await fetchParcelTags(parcelaId);
+        tags = await fetchParcelTags(parcelaId, countryCode);
       }
     } else if (parcelaId !== null) {
-      tags = await fetchParcelTags(parcelaId);
+      tags = await fetchParcelTags(parcelaId, countryCode);
     }
     res.json({
       ...updated,

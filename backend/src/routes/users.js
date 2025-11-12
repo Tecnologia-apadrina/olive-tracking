@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const { hashPassword } = require('../utils/password');
+const { isValidCountryCode, normalizeCountryCode } = require('../utils/country');
 
 // Simple helpers
 const requireAuth = (req, res, next) => {
@@ -15,17 +16,21 @@ const requireAdmin = (req, res, next) => {
 
 // Current user info (simple health of auth)
 router.get('/me', requireAuth, async (req, res) => {
-  res.json({ id: req.userId, username: req.username, role: req.userRole });
+  res.json({ id: req.userId, username: req.username, role: req.userRole, country_code: req.userCountry || 'ES' });
 });
 
 // Create user (admin)
 router.post('/users', requireAuth, requireAdmin, async (req, res) => {
-  const { username, password, role } = req.body || {};
+  const { username, password, role, country_code } = req.body || {};
   if (!username || !password) return res.status(400).json({ error: 'username y password requeridos' });
+  if (!isValidCountryCode(country_code)) {
+    return res.status(400).json({ error: 'country_code inválido (usa ES o PT)' });
+  }
   try {
+    const normalizedCountry = normalizeCountryCode(country_code);
     const row = await db.public.one(
-      'INSERT INTO users(username, password_hash, role) VALUES($1, $2, $3) RETURNING id, username, role',
-      [username, hashPassword(password), role || 'campo']
+      'INSERT INTO users(username, password_hash, role, country_code) VALUES($1, $2, $3, $4) RETURNING id, username, role, country_code',
+      [username, hashPassword(password), role || 'campo', normalizedCountry]
     );
     res.status(201).json(row);
   } catch (e) {
@@ -34,15 +39,21 @@ router.post('/users', requireAuth, requireAdmin, async (req, res) => {
 });
 
 // List users (admin)
-router.get('/users', requireAuth, requireAdmin, async (_req, res) => {
-  const rows = await db.public.many('SELECT id, username, role FROM users ORDER BY username');
+router.get('/users', requireAuth, requireAdmin, async (req, res) => {
+  const rawCountry = req.query && (req.query.country_code || req.query.country);
+  const normalizedCountry = isValidCountryCode(rawCountry) ? normalizeCountryCode(rawCountry) : null;
+  const query = normalizedCountry
+    ? 'SELECT id, username, role, country_code FROM users WHERE country_code = $1 ORDER BY username'
+    : 'SELECT id, username, role, country_code FROM users ORDER BY username';
+  const params = normalizedCountry ? [normalizedCountry] : [];
+  const rows = await db.public.many(query, params);
   res.json(rows);
 });
 
 // Update user (admin)
 router.patch('/users/:id', requireAuth, requireAdmin, async (req, res) => {
   const { id } = req.params;
-  const { username, role, password } = req.body || {};
+  const { username, role, password, country_code } = req.body || {};
   try {
     // Build dynamic update
     const fields = [];
@@ -51,9 +62,16 @@ router.patch('/users/:id', requireAuth, requireAdmin, async (req, res) => {
     if (username) { fields.push(`username = $${idx++}`); params.push(username); }
     if (role) { fields.push(`role = $${idx++}`); params.push(role); }
     if (password) { fields.push(`password_hash = $${idx++}`); params.push(hashPassword(password)); }
+    if (country_code !== undefined) {
+      if (!isValidCountryCode(country_code)) {
+        return res.status(400).json({ error: 'country_code inválido' });
+      }
+      fields.push(`country_code = $${idx++}`);
+      params.push(normalizeCountryCode(country_code));
+    }
     if (fields.length === 0) return res.status(400).json({ error: 'Nada que actualizar' });
     params.push(id);
-    const sql = `UPDATE users SET ${fields.join(', ')} WHERE id = $${idx} RETURNING id, username, role`;
+    const sql = `UPDATE users SET ${fields.join(', ')} WHERE id = $${idx} RETURNING id, username, role, country_code`;
     const row = await db.public.one(sql, params);
     res.json(row);
   } catch (e) {

@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const { resolveRequestCountry } = require('../utils/country');
 
 const requireAuth = (req, res, next) => {
   if (!req.userId) return res.status(401).json({ error: 'No autenticado' });
@@ -36,6 +37,7 @@ function parseNullableNumberInput(value, { integer = false, field = 'valor' } = 
 // Create a new parcela (auth required)
 router.post('/parcelas', async (req, res) => {
   if (!req.userId) return res.status(401).json({ error: 'No autenticado' });
+  const countryCode = resolveRequestCountry(req);
   const { nombre, nombre_interno } = req.body || {};
   const pctParsed = parseNullableNumberInput(req.body?.porcentaje, { field: 'porcentaje' });
   if (pctParsed.error) {
@@ -57,15 +59,35 @@ router.post('/parcelas', async (req, res) => {
     }
   }
   const parajeId = parajeIdRaw === undefined || parajeIdRaw === null || parajeIdRaw === '' ? null : Number(parajeIdRaw);
+  if (parajeId) {
+    try {
+      await db.public.one(
+        'SELECT id FROM parajes WHERE id = $1 AND country_code = $2',
+        [parajeId, countryCode]
+      );
+    } catch (_) {
+      return res.status(400).json({ error: 'Paraje inexistente para este país' });
+    }
+  }
   if (!nombre) {
     return res.status(400).json({ error: 'nombre requerido' });
   }
   // Insert without id_usuario (deprecated)
   const inserted = await db.public.one(
-    'INSERT INTO parcelas(nombre, nombre_interno, porcentaje, num_olivos, hectareas, paraje_id) VALUES($1, $2, $3, $4, $5, $6) RETURNING *',
+    `INSERT INTO parcelas(
+       nombre,
+       nombre_interno,
+       country_code,
+       porcentaje,
+       num_olivos,
+       hectareas,
+       paraje_id
+     ) VALUES($1, $2, $3, $4, $5, $6, $7)
+     RETURNING *`,
     [
       nombre,
       nombre_interno ?? null,
+      countryCode,
       pctParsed.provided ? pctParsed.value : null,
       numOlivosParsed.provided ? numOlivosParsed.value : null,
       hectareasParsed.provided ? hectareasParsed.value : null,
@@ -75,21 +97,24 @@ router.post('/parcelas', async (req, res) => {
   const enriched = await db.public.one(
     `SELECT par.*, pj.nombre AS paraje_nombre
        FROM parcelas par
-       LEFT JOIN parajes pj ON pj.id = par.paraje_id
-      WHERE par.id = $1`,
-    [inserted.id]
+       LEFT JOIN parajes pj ON pj.id = par.paraje_id AND pj.country_code = par.country_code
+      WHERE par.id = $1 AND par.country_code = $2`,
+    [inserted.id, countryCode]
   );
   res.status(201).json(enriched);
 });
 
 // List parcelas (admin only)
-router.get('/parcelas', requireAuth, requireAdmin, async (_req, res) => {
+router.get('/parcelas', requireAuth, requireAdmin, async (req, res) => {
+  const countryCode = resolveRequestCountry(req);
   try {
     const rows = await db.public.many(
       `SELECT par.*, pj.nombre AS paraje_nombre
          FROM parcelas par
-         LEFT JOIN parajes pj ON pj.id = par.paraje_id
-        ORDER BY par.id`
+         LEFT JOIN parajes pj ON pj.id = par.paraje_id AND pj.country_code = par.country_code
+        WHERE par.country_code = $1
+        ORDER BY par.id`,
+      [countryCode]
     );
     res.json(rows);
   } catch (e) {
@@ -102,6 +127,7 @@ router.patch('/parcelas/:id', requireAuth, requireAdmin, async (req, res) => {
   const { id } = req.params;
   const body = req.body || {};
   const numericId = Number(id);
+  const countryCode = resolveRequestCountry(req);
   if (!Number.isInteger(numericId) || numericId <= 0) {
     return res.status(400).json({ error: 'id inválido' });
   }
@@ -118,47 +144,55 @@ router.patch('/parcelas/:id', requireAuth, requireAdmin, async (req, res) => {
     return res.status(400).json({ error: hectareasParsed.error });
   }
   const updates = [];
-  const params = [numericId];
+  const values = [];
   if (pctParsed.provided) {
-    updates.push(`porcentaje = $${params.length + 1}`);
-    params.push(pctParsed.value);
+    updates.push(`porcentaje = $${values.length + 1}`);
+    values.push(pctParsed.value);
   }
   if (numOlivosParsed.provided) {
-    updates.push(`num_olivos = $${params.length + 1}`);
-    params.push(numOlivosParsed.value);
+    updates.push(`num_olivos = $${values.length + 1}`);
+    values.push(numOlivosParsed.value);
   }
   if (hectareasParsed.provided) {
-    updates.push(`hectareas = $${params.length + 1}`);
-    params.push(hectareasParsed.value);
+    updates.push(`hectareas = $${values.length + 1}`);
+    values.push(hectareasParsed.value);
   }
   if (body.paraje_id !== undefined) {
     const rawParaje = body.paraje_id;
     if (rawParaje === null || rawParaje === '') {
-      updates.push(`paraje_id = $${params.length + 1}`);
-      params.push(null);
+      updates.push(`paraje_id = $${values.length + 1}`);
+      values.push(null);
     } else {
       const parsedParaje = Number(rawParaje);
       if (!Number.isInteger(parsedParaje) || parsedParaje <= 0) {
         return res.status(400).json({ error: 'paraje_id inválido' });
       }
-      updates.push(`paraje_id = $${params.length + 1}`);
-      params.push(parsedParaje);
+      try {
+        await db.public.one(
+          'SELECT id FROM parajes WHERE id = $1 AND country_code = $2',
+          [parsedParaje, countryCode]
+        );
+      } catch (_) {
+        return res.status(400).json({ error: 'Paraje inexistente para este país' });
+      }
+      updates.push(`paraje_id = $${values.length + 1}`);
+      values.push(parsedParaje);
     }
   }
   if (updates.length === 0) {
     return res.status(400).json({ error: 'Sin cambios' });
   }
   try {
-    await db.public.one(
-      `UPDATE parcelas SET ${updates.join(', ')} WHERE id = $1 RETURNING id`,
-      params
-    );
+    const idParamIndex = values.length + 1;
+    const countryParamIndex = values.length + 2;
+    const sql = `UPDATE parcelas SET ${updates.join(', ')} WHERE id = $${idParamIndex} AND country_code = $${countryParamIndex} RETURNING id`;
+    await db.public.one(sql, [...values, numericId, countryCode]);
     const updated = await db.public.one(
       `SELECT par.*, pj.nombre AS paraje_nombre
          FROM parcelas par
-         LEFT JOIN parajes pj ON pj.id = par.paraje_id
-        WHERE par.id = $1`,
-      [numericId]
+         LEFT JOIN parajes pj ON pj.id = par.paraje_id AND pj.country_code = par.country_code
+        WHERE par.id = $1 AND par.country_code = $2`,
+      [numericId, countryCode]
     );
     res.json(updated);
   } catch (e) {
@@ -171,14 +205,15 @@ router.delete('/parcelas/:id', requireAuth, requireAdmin, async (req, res) => {
   const { id } = req.params;
   const rawForce = req.query.force;
   const numericId = Number(id);
+  const countryCode = resolveRequestCountry(req);
   if (!Number.isInteger(numericId) || numericId <= 0) {
     return res.status(400).json({ error: 'id inválido' });
   }
   let relationCount = 0;
   try {
     const result = await db.public.one(
-      'SELECT COUNT(*)::int AS count FROM parcelas_palots WHERE id_parcela = $1',
-      [numericId]
+      'SELECT COUNT(*)::int AS count FROM parcelas_palots WHERE id_parcela = $1 AND country_code = $2',
+      [numericId, countryCode]
     );
     relationCount = Number(result?.count ?? 0);
   } catch (_) {
@@ -195,9 +230,9 @@ router.delete('/parcelas/:id', requireAuth, requireAdmin, async (req, res) => {
   }
   try {
     // Remove dependent records before deleting the parcela to satisfy FK constraints.
-    await db.public.none('DELETE FROM parcelas_palots WHERE id_parcela = $1', [numericId]);
-    await db.public.none('DELETE FROM olivos WHERE id_parcela = $1', [numericId]);
-    await db.public.one('DELETE FROM parcelas WHERE id = $1 RETURNING id', [numericId]);
+    await db.public.none('DELETE FROM parcelas_palots WHERE id_parcela = $1 AND country_code = $2', [numericId, countryCode]);
+    await db.public.none('DELETE FROM olivos WHERE id_parcela = $1 AND country_code = $2', [numericId, countryCode]);
+    await db.public.one('DELETE FROM parcelas WHERE id = $1 AND country_code = $2 RETURNING id', [numericId, countryCode]);
     return res.status(204).end();
   } catch (e) {
     return res.status(404).json({ error: 'Parcela no encontrada' });

@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const { resolveRequestCountry } = require('../utils/country');
 
 const requireAuth = (req, res, next) => {
   if (!req.userId) return res.status(401).json({ error: 'No autenticado' });
@@ -25,9 +26,13 @@ const mapRow = (row) => ({
   icono: row.icono || '',
 });
 
-router.get('/activity-types', requireAuth, async (_req, res) => {
+router.get('/activity-types', requireAuth, async (req, res) => {
+  const countryCode = resolveRequestCountry(req);
   try {
-    const rows = await db.public.many('SELECT id, nombre, icono FROM activity_types ORDER BY nombre ASC');
+    const rows = await db.public.many(
+      'SELECT id, nombre, icono FROM activity_types WHERE country_code = $1 ORDER BY nombre ASC',
+      [countryCode]
+    );
     res.json(rows.map(mapRow));
   } catch (error) {
     res.status(500).json({ error: 'No se pudieron listar los tipos de actividad' });
@@ -35,6 +40,7 @@ router.get('/activity-types', requireAuth, async (_req, res) => {
 });
 
 router.post('/activity-types', requireAuth, requireAdminOrMetrics, async (req, res) => {
+  const countryCode = resolveRequestCountry(req);
   const nombre = normalizeText(req.body && req.body.nombre);
   const icono = normalizeText(req.body && req.body.icono);
   if (!nombre) {
@@ -42,8 +48,8 @@ router.post('/activity-types', requireAuth, requireAdminOrMetrics, async (req, r
   }
   try {
     const row = await db.public.one(
-      'INSERT INTO activity_types(nombre, icono) VALUES($1, $2) RETURNING id, nombre, icono',
-      [nombre, icono]
+      'INSERT INTO activity_types(nombre, icono, country_code) VALUES($1, $2, $3) RETURNING id, nombre, icono',
+      [nombre, icono, countryCode]
     );
     res.status(201).json(mapRow(row));
   } catch (error) {
@@ -55,6 +61,7 @@ router.post('/activity-types', requireAuth, requireAdminOrMetrics, async (req, r
 });
 
 router.put('/activity-types/:typeId', requireAuth, requireAdminOrMetrics, async (req, res) => {
+  const countryCode = resolveRequestCountry(req);
   const nombre = normalizeText(req.body && req.body.nombre);
   const icono = normalizeText(req.body && req.body.icono);
   if (!nombre) {
@@ -66,8 +73,12 @@ router.put('/activity-types/:typeId', requireAuth, requireAdminOrMetrics, async 
   }
   try {
     const row = await db.public.one(
-      'UPDATE activity_types SET nombre = $1, icono = $2 WHERE id = $3 RETURNING id, nombre, icono',
-      [nombre, icono, typeId]
+      `UPDATE activity_types
+          SET nombre = $1,
+              icono = $2
+        WHERE id = $3 AND country_code = $4
+        RETURNING id, nombre, icono`,
+      [nombre, icono, typeId, countryCode]
     );
     res.json(mapRow(row));
   } catch (error) {
@@ -83,11 +94,15 @@ router.put('/activity-types/:typeId', requireAuth, requireAdminOrMetrics, async 
 
 router.delete('/activity-types/:typeId', requireAuth, requireAdminOrMetrics, async (req, res) => {
   const typeId = Number(req.params.typeId);
+  const countryCode = resolveRequestCountry(req);
   if (!Number.isInteger(typeId) || typeId <= 0) {
     return res.status(400).json({ error: 'ID inválido' });
   }
   try {
-    await db.public.one('DELETE FROM activity_types WHERE id = $1 RETURNING id', [typeId]);
+    await db.public.one(
+      'DELETE FROM activity_types WHERE id = $1 AND country_code = $2 RETURNING id',
+      [typeId, countryCode]
+    );
     res.status(204).end();
   } catch (error) {
     if (error.message && error.message.includes('No rows')) {
