@@ -126,6 +126,10 @@ function App() {
   const [parcelaId, setParcelaId] = useState(null);
   const [parcelaPct, setParcelaPct] = useState(null);
   const [status, setStatus] = useState('idle'); // idle | waiting | loading | success | error
+  const [odooOlivo, setOdooOlivo] = useState('');
+  const [odooParcelaNombre, setOdooParcelaNombre] = useState('');
+  const [odooParcelaPct, setOdooParcelaPct] = useState(null);
+  const [odooLookupStatus, setOdooLookupStatus] = useState('idle'); // idle | waiting | loading | success | error
   const [saveStatus, setSaveStatus] = useState('idle'); // idle | saving | ok | fail
   const [message, setMessage] = useState('');
   const [allRels, setAllRels] = useState([]);
@@ -143,6 +147,8 @@ function App() {
   const [aderezoSaveStatus, setAderezoSaveStatus] = useState({}); // { [palotKey]: 'idle'|'saving'|'ok'|'error' }
   const [collapsedPalots, setCollapsedPalots] = useState({}); // { [palotId]: boolean }
   const debounceRef = useRef(null);
+  const odooDebounceRef = useRef(null);
+  const preferOdooParcelaRef = useRef(false);
   const [appVersion, setAppVersion] = useState('');
   const [dbUrl, setDbUrl] = useState('');
   const [loginError, setLoginError] = useState('');
@@ -439,6 +445,12 @@ function App() {
         return (authRoleRef.current === 'admin' || authRoleRef.current === 'metricas') ? 'metrics' : 'main';
       case '/etiquetas':
         return authRoleRef.current === 'admin' ? 'etiquetas' : 'main';
+      case '/fotos':
+        return authRoleRef.current === 'admin' ? 'fotos' : 'main';
+      case '/configuracion':
+        return authRoleRef.current === 'admin' ? 'configuracion' : 'main';
+      case '/parcelas-odoo':
+        return authRoleRef.current === 'admin' ? 'parcelas-odoo' : 'main';
       default:
         return 'main';
     }
@@ -462,6 +474,14 @@ function App() {
 
   // Debounced lookup for olivo -> parcela
   useEffect(() => {
+    if (odooOlivo && odooOlivo.trim() !== '') {
+      // Cuando usamos el buscador de Odoo ignoramos la BBDD local.
+      return;
+    }
+    if (preferOdooParcelaRef.current && odooLookupStatus === 'success' && parcelaId) {
+      // Si ya tenemos parcela de Odoo, no pisar con el flujo local.
+      return;
+    }
     if (debounceRef.current) {
       clearTimeout(debounceRef.current);
     }
@@ -543,7 +563,81 @@ function App() {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [olivo, isOnline, authToken]);
+  }, [olivo, isOnline, authToken, odooLookupStatus, parcelaId]);
+
+  // Debounced lookup for olivo -> parcela using Odoo (category "Olivo")
+  useEffect(() => {
+    if (odooDebounceRef.current) {
+      clearTimeout(odooDebounceRef.current);
+    }
+
+    if (!odooOlivo || odooOlivo.trim() === '') {
+      setOdooLookupStatus('idle');
+      setOdooParcelaNombre('');
+      setOdooParcelaPct(null);
+      // No limpiamos parcelaId/parcelaNombre globales aquí para no romper
+      // una selección previa basada en la BBDD local.
+      preferOdooParcelaRef.current = false;
+      return;
+    }
+
+    setOdooLookupStatus('waiting');
+    odooDebounceRef.current = setTimeout(async () => {
+      setOdooLookupStatus('loading');
+      try {
+        if (!isOnline) {
+          throw new Error('offline');
+        }
+        const res = await fetch(`${apiBase}/odoo/olivos/lookup`, {
+          method: 'POST',
+          headers: {
+            ...authHeaders,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ reference: odooOlivo }),
+        });
+        if (res.status === 401) {
+          throw new Error('No autenticado');
+        }
+        if (res.status === 404) {
+          throw new Error('not-found');
+        }
+        if (!res.ok) {
+          throw new Error('network');
+        }
+        const data = await res.json();
+        const parcelaNombreOdoo = data.parcela_nombre || '';
+        const parcelaPctOdoo = data.contract_percentage != null ? Number(data.contract_percentage) : null;
+        const parcelaIdOdoo = data.parcela_id != null ? Number(data.parcela_id) : null;
+
+        // Guardamos también en el estado "global" de parcela
+        // para que la relación palot-parcela use el id de Odoo.
+        if (Number.isInteger(parcelaIdOdoo) && parcelaIdOdoo > 0) {
+          setParcelaId(parcelaIdOdoo);
+        }
+        setParcelaNombre(parcelaNombreOdoo);
+        setParcelaPct(parcelaPctOdoo);
+        preferOdooParcelaRef.current = true;
+
+        // Estado específico de la búsqueda Odoo (para mostrar mensajes)
+        setOdooParcelaNombre(parcelaNombreOdoo);
+        setOdooParcelaPct(parcelaPctOdoo);
+        setStatus('success');
+        setOdooLookupStatus('success');
+      } catch (err) {
+        // No tocamos parcelaId/parcelaNombre globales para no borrar
+        // una selección que venga de la tabla local.
+        setOdooParcelaNombre('');
+        setOdooParcelaPct(null);
+        setOdooLookupStatus('error');
+        preferOdooParcelaRef.current = false;
+      }
+    }, 800);
+
+    return () => {
+      if (odooDebounceRef.current) clearTimeout(odooDebounceRef.current);
+    };
+  }, [odooOlivo, isOnline, authToken]);
 
   const beginRelationsRefresh = () => {
     relationsRefreshCounter.current += 1;
@@ -855,6 +949,11 @@ function App() {
         setPalotInput('');
         setPalotAddError('');
         setOlivo('');
+        setOdooOlivo('');
+        setOdooParcelaNombre('');
+        setOdooParcelaPct(null);
+        setOdooLookupStatus('idle');
+        preferOdooParcelaRef.current = false;
         setParcelaNombre('');
         setParcelaId(null);
         setParcelaPct(null);
@@ -867,6 +966,7 @@ function App() {
         setPalotAddError('');
         setPalotKgs('');
         setStatus('success');
+        // Mantener búsqueda Odoo activa para siguientes guardados parciales
       }
     };
 
@@ -980,6 +1080,11 @@ function App() {
               reservado_aderezo: false,
               notas: hasNotes ? rawNotes : null,
               etiquetas: tagIds,
+              parcela_nombre: parcelaInfoSafe.nombre || parcelaNombre || '',
+              parcela_nombre_interno: parcelaInfoSafe.nombre_interno || '',
+              parcela_porcentaje: parcelaInfoSafe.porcentaje != null
+                ? parcelaInfoSafe.porcentaje
+                : (parcelaPct != null ? parcelaPct : null),
             })
         });
         if (relRes.status === 401) {
@@ -1112,7 +1217,8 @@ function App() {
   const pendingPalotsCount = palotList.length + (toStringSafe(palotInput).trim() ? 1 : 0);
   const isOlivoLocked = palotList.length > 0 || saveStatus === 'saving';
   const palotKgsTrimmed = toStringSafe(palotKgs).trim();
-  const canSave = status === 'success'
+  const hasParcelaReady = odooLookupStatus === 'success' && !!parcelaId;
+  const canSave = hasParcelaReady
     && !!parcelaId
     && pendingPalotsCount > 0
     && saveStatus !== 'saving'
@@ -1971,7 +2077,13 @@ function App() {
                 {(authRole === 'admin' || authRole === 'metricas') && (
                   <a className={`btn ${view === 'metrics' ? '' : 'btn-outline'}`} href="/metrics" onClick={(e) => { e.preventDefault(); handleNav('/metrics'); }}>Métricas</a>
                 )}
+                {authRole === 'admin' && (
+                  <a className={`btn ${view === 'fotos' ? '' : 'btn-outline'}`} href="/fotos" onClick={(e) => { e.preventDefault(); handleNav('/fotos'); }}>Fotos</a>
+                )}
               </div>
+              <span className="muted" style={{ fontSize: '0.85rem' }}>
+                País: {authCountry === 'PT' ? 'Portugal' : 'España'}
+              </span>
               {authRole === 'admin' && (
                 <div className="admin-menu">
                   <button
@@ -1992,6 +2104,8 @@ function App() {
                           <a className={`btn ${view === 'parajes' ? '' : 'btn-outline'}`} href="/parajes" onClick={(e) => { e.preventDefault(); handleNav('/parajes'); }}>Parajes</a>
                           <a className={`btn ${view === 'palots' ? '' : 'btn-outline'}`} href="/palots" onClick={(e) => { e.preventDefault(); handleNav('/palots'); }}>Palots</a>
                           <a className={`btn ${view === 'etiquetas' ? '' : 'btn-outline'}`} href="/etiquetas" onClick={(e) => { e.preventDefault(); handleNav('/etiquetas'); }}>Etiquetas</a>
+                          <a className={`btn ${view === 'configuracion' ? '' : 'btn-outline'}`} href="/configuracion" onClick={(e) => { e.preventDefault(); handleNav('/configuracion'); }}>Configuración</a>
+                          <a className={`btn ${view === 'parcelas-odoo' ? '' : 'btn-outline'}`} href="/parcelas-odoo" onClick={(e) => { e.preventDefault(); handleNav('/parcelas-odoo'); }}>Parcelas Odoo</a>
                         </>
                       )}
                     </div>
@@ -2038,7 +2152,10 @@ function App() {
           <label>Introduce nº de olivo</label>
           <input
             value={olivo}
-            onChange={e => setOlivo(e.target.value)}
+            onChange={e => {
+              preferOdooParcelaRef.current = false;
+              setOlivo(e.target.value);
+            }}
             placeholder="Ej. 123"
             inputMode="numeric"
             disabled={isOlivoLocked}
@@ -2057,6 +2174,39 @@ function App() {
             </div>
           )}
           {status === 'error' && <span className="state error">No se encontró la parcela para ese olivo.</span>}
+        </div>
+
+        <div className="row">
+          <label>Introduce nº de olivo (Odoo)</label>
+          <input
+            value={odooOlivo}
+            onChange={(e) => setOdooOlivo(e.target.value)}
+            placeholder="Ej. 123 (Odoo)"
+            inputMode="numeric"
+            disabled={!isOnline}
+          />
+          {!isOnline && (
+            <span className="state muted">Búsqueda en Odoo disponible solo con conexión.</span>
+          )}
+          {isOnline && odooLookupStatus === 'waiting' && (
+            <span className="state muted">Esperando a terminar de escribir…</span>
+          )}
+          {isOnline && odooLookupStatus === 'loading' && (
+            <span className="state muted">Buscando en Odoo…</span>
+          )}
+          {isOnline && odooLookupStatus === 'success' && odooParcelaNombre && (
+            <div className="state ok">
+              Parcela (Odoo): {odooParcelaNombre}
+              {odooParcelaPct != null && (
+                <span className="pill" style={{ marginLeft: '0.5rem' }}>
+                  Donación: {String(odooParcelaPct)}%
+                </span>
+              )}
+            </div>
+          )}
+          {isOnline && odooLookupStatus === 'error' && (
+            <span className="state error">No se encontró el olivo en Odoo o hubo un error.</span>
+          )}
         </div>
 
         <div className="divider" />
@@ -2271,6 +2421,17 @@ function App() {
           dbUrl={dbUrl}
           authUser={authUser}
           authRole={authRole}
+          onSelfCountryChange={(nextCountry) => {
+            const safeCountry = normalizeCountryCode(nextCountry || authCountry);
+            applySession({
+              username: authUser,
+              token: authToken,
+              role: authRole,
+              country: safeCountry,
+              persist: true,
+              resetOfflineOnChange: true,
+            });
+          }}
         />
       )}
 
@@ -2387,8 +2548,34 @@ function App() {
         </div>
       )}
 
+      {authToken && authRole === 'admin' && view === 'fotos' && (
+        <FotosView
+          apiBase={apiBase}
+          authHeaders={authHeaders}
+          isOnline={isOnline}
+          authCountry={authCountry}
+        />
+      )}
+
+      {authToken && authRole === 'admin' && view === 'configuracion' && (
+        <ConfiguracionView
+          apiBase={apiBase}
+          authHeaders={authHeaders}
+          isOnline={isOnline}
+          authCountry={authCountry}
+        />
+      )}
+
+      {authToken && authRole === 'admin' && view === 'parcelas-odoo' && (
+        <ParcelasOdooView
+          apiBase={apiBase}
+          authHeaders={authHeaders}
+          isOnline={isOnline}
+        />
+      )}
+
       {authToken && (authRole === 'admin' || authRole === 'metricas') && view === 'metrics' && (
-        <MetricsView apiBase={apiBase} authHeaders={authHeaders} />
+        <MetricsView apiBase={apiBase} authHeaders={authHeaders} countryCode={authCountry} />
       )}
         </>
       )}
@@ -3425,7 +3612,736 @@ function ActivityTypesView({
   );
 }
 
-function MetricsView({ apiBase, authHeaders }) {
+function FotosView({ apiBase, authHeaders, isOnline, authCountry }) {
+  const [configStatus, setConfigStatus] = React.useState('loading'); // loading | ready | error
+  const [configMessage, setConfigMessage] = React.useState('');
+  const [config, setConfig] = React.useState({ url: '', db_name: '', username: '' });
+  const [manualReference, setManualReference] = React.useState('');
+  const [productInfo, setProductInfo] = React.useState(null);
+  const [lookupStatus, setLookupStatus] = React.useState('idle'); // idle | loading | ok | error
+  const [scanStatus, setScanStatus] = React.useState('idle'); // idle | camera | detected
+  const [scanMessage, setScanMessage] = React.useState('');
+  const [cameraError, setCameraError] = React.useState('');
+  const [photoData, setPhotoData] = React.useState('');
+  const [uploadStatus, setUploadStatus] = React.useState('idle'); // idle | saving | ok | error
+  const [uploadMessage, setUploadMessage] = React.useState('');
+  const [geoStatus, setGeoStatus] = React.useState('idle'); // idle | loading | ok | error
+  const [currentCoords, setCurrentCoords] = React.useState(null);
+  const videoRef = React.useRef(null);
+  const canvasRef = React.useRef(null);
+  const streamRef = React.useRef(null);
+  const scanLoopRef = React.useRef(null);
+  const detectorRef = React.useRef(null);
+  const barcodeSupported = typeof window !== 'undefined' && 'BarcodeDetector' in window;
+
+  const stopScanLoop = React.useCallback(() => {
+    if (scanLoopRef.current) {
+      cancelAnimationFrame(scanLoopRef.current);
+      scanLoopRef.current = null;
+    }
+  }, []);
+
+  const stopCamera = React.useCallback(() => {
+    stopScanLoop();
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setScanStatus('idle');
+  }, [stopScanLoop]);
+
+  const refreshCoords = React.useCallback(() => {
+    if (!('geolocation' in navigator)) {
+      setGeoStatus('error');
+      setCurrentCoords(null);
+      return;
+    }
+    setGeoStatus('loading');
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setCurrentCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        setGeoStatus('ok');
+      },
+      () => {
+        setCurrentCoords(null);
+        setGeoStatus('error');
+      },
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
+    );
+  }, []);
+
+  React.useEffect(() => {
+    if (barcodeSupported && !detectorRef.current) {
+      try {
+        detectorRef.current = new window.BarcodeDetector({ formats: ['qr_code', 'code_128'] });
+      } catch (_) {
+        detectorRef.current = null;
+      }
+    }
+  }, [barcodeSupported]);
+
+  const loadConfig = React.useCallback(async () => {
+    setConfigStatus('loading');
+    setConfigMessage('');
+    try {
+      const res = await fetch(`${apiBase}/odoo/config`, { headers: { ...authHeaders } });
+      if (!res.ok) throw new Error('No autorizado');
+      const data = await res.json().catch(() => ({}));
+      const cfg = data && data.config ? data.config : null;
+      if (cfg) {
+        setConfig({
+          url: cfg.url || '',
+          db_name: cfg.db_name || '',
+          username: cfg.username || '',
+        });
+      } else {
+        setConfig({ url: '', db_name: '', username: '' });
+      }
+      setConfigStatus('ready');
+    } catch (err) {
+      setConfigStatus('error');
+      setConfigMessage('No se pudo cargar la configuración guardada.');
+    }
+  }, [apiBase, authHeaders]);
+
+  React.useEffect(() => {
+    loadConfig();
+    refreshCoords();
+    return () => {
+      stopCamera();
+    };
+  }, [loadConfig, refreshCoords, stopCamera]);
+
+  const lookupProduct = React.useCallback(async (referenceValue) => {
+    const ref = String(referenceValue || manualReference || '').trim();
+    if (!ref) {
+      setLookupStatus('error');
+      setScanMessage('Introduce o escanea una referencia.');
+      return;
+    }
+    if (!isOnline) {
+      setLookupStatus('error');
+      setScanMessage('Conéctate para buscar en Odoo.');
+      return;
+    }
+    if (!config.url || !config.db_name || !config.username) {
+      setLookupStatus('error');
+      setScanMessage('Configura primero la conexión en "Configuración".');
+      return;
+    }
+    setLookupStatus('loading');
+    setProductInfo(null);
+    setUploadStatus('idle');
+    setUploadMessage('');
+    try {
+      const payload = {
+        reference: ref,
+        url: config.url,
+        db_name: config.db_name,
+        username: config.username,
+        country_code: authCountry,
+      };
+      const res = await fetch(`${apiBase}/odoo/products/lookup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'Producto no encontrado');
+      }
+      setProductInfo(data);
+      setManualReference(data.reference || ref);
+      setLookupStatus('ok');
+      setScanMessage('Producto obtenido de Odoo.');
+      setPhotoData('');
+      setGeoStatus('idle');
+    } catch (err) {
+      setLookupStatus('error');
+      setScanMessage(err && err.message ? err.message : 'No se pudo buscar el producto');
+    }
+  }, [apiBase, authCountry, authHeaders, config, isOnline, manualReference]);
+
+  const scanLoop = React.useCallback(async () => {
+    if (!detectorRef.current || !videoRef.current) return;
+    try {
+      const codes = await detectorRef.current.detect(videoRef.current);
+      if (Array.isArray(codes) && codes[0]) {
+        const raw = codes[0].rawValue;
+        const value = raw || raw === 0 ? String(raw) : '';
+        if (value) {
+          stopScanLoop();
+          setScanStatus('detected');
+          setScanMessage(`Código detectado: ${value}`);
+          setManualReference(value);
+          lookupProduct(value);
+          return;
+        }
+      }
+    } catch (_) {
+      // ignore detector errors; retry next frame
+    }
+    scanLoopRef.current = requestAnimationFrame(scanLoop);
+  }, [lookupProduct, stopScanLoop]);
+
+  const startCamera = async () => {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setCameraError('La cámara no es compatible en este dispositivo.');
+      return;
+    }
+    setPhotoData('');
+    setCameraError('');
+    setScanMessage('');
+    setScanStatus('camera');
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+      stopScanLoop();
+      if (barcodeSupported && detectorRef.current) {
+        scanLoopRef.current = requestAnimationFrame(scanLoop);
+      } else {
+        setScanMessage('Detector de QR no disponible. Usa la referencia manual.');
+      }
+    } catch (err) {
+      setCameraError('No se pudo abrir la cámara. Revisa permisos.');
+      setScanStatus('idle');
+    }
+  };
+
+  const handleManualLookup = (event) => {
+    event?.preventDefault?.();
+    lookupProduct(manualReference);
+  };
+
+  const handleCapturePhoto = () => {
+    setUploadStatus('idle');
+    setUploadMessage('');
+    if (!videoRef.current || !videoRef.current.videoWidth) {
+      setCameraError('Activa la cámara para tomar la foto.');
+      return;
+    }
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    canvas.width = videoRef.current.videoWidth;
+    canvas.height = videoRef.current.videoHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+    setPhotoData(dataUrl);
+  };
+
+  const handleUploadPhoto = async () => {
+    if (!productInfo) {
+      setUploadStatus('error');
+      setUploadMessage('Escanea o busca un producto primero.');
+      return;
+    }
+    if (!photoData) {
+      setUploadStatus('error');
+      setUploadMessage('Toma una foto antes de subir.');
+      return;
+    }
+    if (!isOnline) {
+      setUploadStatus('error');
+      setUploadMessage('Conéctate para subir la foto a Odoo.');
+      return;
+    }
+    setUploadStatus('saving');
+    setUploadMessage('');
+    const coords = currentCoords;
+    try {
+      if (!config.url || !config.db_name || !config.username) {
+        throw new Error('Configura primero la conexión en "Configuración".');
+      }
+      const payload = {
+        image_base64: photoData,
+        template_id: productInfo.template_id,
+        reference: productInfo.reference,
+        url: config.url,
+        db_name: config.db_name,
+        username: config.username,
+        country_code: authCountry,
+      };
+      if (coords) {
+        payload.latitude = coords.lat;
+        payload.longitude = coords.lng;
+      }
+      const res = await fetch(`${apiBase}/odoo/products/${productInfo.id}/photo`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'No se pudo subir la foto');
+      }
+      setUploadStatus('ok');
+      setUploadMessage('Foto subida correctamente.');
+    } catch (err) {
+      setUploadStatus('error');
+      setUploadMessage(err && err.message ? err.message : 'Error al subir la foto');
+    }
+  };
+
+  return (
+    <div className="card grid">
+      <div className="controls" style={{ justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+        <div>
+          <h1>/fotos · Odoo</h1>
+          <span className="muted">Solo administradores. Escanea el QR y sube la foto del producto.</span>
+        </div>
+        <div className="controls" style={{ flexWrap: 'wrap', gap: '0.35rem' }}>
+          <button className="btn btn-outline" onClick={loadConfig}>Recargar</button>
+          <button className="btn btn-outline" onClick={refreshCoords}>Obtener ubicación</button>
+          <button className="btn btn-outline" onClick={stopCamera}>Detener cámara</button>
+        </div>
+      </div>
+
+      {configStatus === 'error' && configMessage && (
+        <div className="row">
+          <span className="state error">{configMessage}</span>
+        </div>
+      )}
+      {configStatus === 'ready' && (!config.url || !config.db_name || !config.username) && (
+        <div className="row">
+          <span className="state warning">Configura primero la conexión a Odoo desde el menú "Configuración".</span>
+        </div>
+      )}
+
+      <div className="grid media-grid">
+        <div className="media-box">
+          <div className="controls" style={{ justifyContent: 'space-between' }}>
+            <div>
+              <h2>Escanear QR</h2>
+              <span className="muted">El QR debe contener la referencia (código interno) del producto.</span>
+            </div>
+            <div className="controls" style={{ flexWrap: 'wrap' }}>
+              <button className="btn" onClick={startCamera}>
+                {scanStatus === 'camera' ? 'Reiniciar cámara' : 'Activar cámara'}
+              </button>
+              <button className="btn btn-outline" onClick={stopCamera}>Apagar</button>
+            </div>
+          </div>
+          <div className="video-frame">
+            <video ref={videoRef} className="video-preview" playsInline muted />
+            {scanStatus === 'camera' && (
+              <span className="pill pill-info scan-indicator">Escaneando…</span>
+            )}
+            {scanStatus === 'detected' && (
+              <span className="pill pill-success scan-indicator">QR leído</span>
+            )}
+          </div>
+          {cameraError && <span className="state error">{cameraError}</span>}
+          {scanMessage && <span className={lookupStatus === 'error' ? 'state error' : 'state ok'}>{scanMessage}</span>}
+          {!barcodeSupported && (
+            <span className="muted">El navegador no expone detector de QR. Usa la referencia manual.</span>
+          )}
+          <form onSubmit={handleManualLookup} className="row" style={{ marginTop: '0.5rem' }}>
+            <label>Referencia manual</label>
+            <div className="controls" style={{ flexWrap: 'wrap' }}>
+              <input
+                value={manualReference}
+                onChange={(e) => setManualReference(e.target.value)}
+                placeholder="Ej. PROD-001"
+                style={{ flex: '1 1 200px' }}
+              />
+              <button type="submit" className="btn btn-outline" disabled={lookupStatus === 'loading' || !manualReference.trim()}>
+                {lookupStatus === 'loading' ? 'Buscando…' : 'Buscar en Odoo'}
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <div className="media-box">
+          <div className="controls" style={{ justifyContent: 'space-between' }}>
+            <div>
+              <h2>Producto y foto</h2>
+              <span className="muted">Cuando el producto esté listo, captura y súbelo a la galería de Odoo.</span>
+            </div>
+            <div className="controls" style={{ flexWrap: 'wrap' }}>
+              <button type="button" className="btn btn-outline" onClick={handleCapturePhoto} disabled={!streamRef.current}>
+                Tomar foto
+              </button>
+              <button type="button" className="btn btn-outline" onClick={() => setPhotoData('')}>
+                Borrar foto
+              </button>
+            </div>
+          </div>
+          {productInfo ? (
+            <>
+              <div className="product-chip">
+                <div>
+                  <div className="muted">Producto Odoo</div>
+                  <div className="product-name">{productInfo.name || 'Producto'}</div>
+                  <div className="muted">Ref: {productInfo.reference || manualReference || '-'}</div>
+                  {productInfo.parcela_id && (
+                    <div className="muted">
+                      Parcela: {productInfo.parcela_nombre || `ID ${productInfo.parcela_id}`} · ID: {productInfo.parcela_id}
+                    </div>
+                  )}
+                </div>
+                <div className="pill pill-success">OK</div>
+              </div>
+              {productInfo.image_1920 && (
+                <div className="photo-preview" style={{ marginTop: '0.5rem' }}>
+                  <img
+                    src={`data:image/jpeg;base64,${productInfo.image_1920}`}
+                    alt="Imagen principal de Odoo"
+                  />
+                </div>
+              )}
+              {Array.isArray(productInfo.extra_images) && productInfo.extra_images.length > 0 && (
+                <div className="media-thumbnails">
+                  {productInfo.extra_images.map((img, idx) => (
+                    <img
+                      key={idx}
+                      src={`data:image/jpeg;base64,${img}`}
+                      alt={`Imagen adicional ${idx + 1}`}
+                    />
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <span className="muted">Aún no hay producto seleccionado.</span>
+          )}
+          <div className="photo-preview">
+            {photoData ? (
+              <img src={photoData} alt="Foto capturada" />
+            ) : (
+              <div className="muted">Activa la cámara y pulsa “Tomar foto”.</div>
+            )}
+          </div>
+          <div className="controls" style={{ flexWrap: 'wrap' }}>
+            <button
+              className="btn"
+              onClick={handleUploadPhoto}
+              disabled={uploadStatus === 'saving' || !photoData || !productInfo}
+            >
+              {uploadStatus === 'saving' ? 'Subiendo…' : 'Guardar en Odoo'}
+            </button>
+            {geoStatus === 'ok' && <span className="pill pill-info">GPS adjunto</span>}
+            {geoStatus === 'error' && <span className="pill pill-warning">Sin GPS</span>}
+            {uploadMessage && (
+              <span className={uploadStatus === 'ok' ? 'state ok' : 'state error'}>
+                {uploadMessage}
+              </span>
+            )}
+          </div>
+          <canvas ref={canvasRef} style={{ display: 'none' }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ConfiguracionView({ apiBase, authHeaders, isOnline, authCountry }) {
+  const [configStatus, setConfigStatus] = React.useState('loading'); // loading | ready | saving | error
+  const [configMessage, setConfigMessage] = React.useState('');
+  const [configDraft, setConfigDraft] = React.useState({ url: '', db_name: '', username: '', password: '' });
+  const [testStatus, setTestStatus] = React.useState('idle'); // idle | testing | ok | error
+  const [testMessage, setTestMessage] = React.useState('');
+
+  const loadConfig = React.useCallback(async () => {
+    setConfigStatus('loading');
+    setConfigMessage('');
+    try {
+      const res = await fetch(`${apiBase}/odoo/config`, { headers: { ...authHeaders } });
+      if (!res.ok) throw new Error('No autorizado');
+      const data = await res.json().catch(() => ({}));
+      const cfg = data && data.config ? data.config : null;
+      if (cfg) {
+        setConfigDraft({
+          url: cfg.url || '',
+          db_name: cfg.db_name || '',
+          username: cfg.username || '',
+          password: '',
+        });
+      } else {
+        setConfigDraft({ url: '', db_name: '', username: '', password: '' });
+      }
+      setConfigStatus('ready');
+    } catch (err) {
+      setConfigStatus('error');
+      setConfigMessage('No se pudo cargar la configuración guardada.');
+    }
+  }, [apiBase, authHeaders]);
+
+  React.useEffect(() => {
+    loadConfig();
+  }, [loadConfig]);
+
+  const handleDraftChange = (field, value) => {
+    setConfigDraft((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handleSaveConfig = async (event) => {
+    event?.preventDefault?.();
+    setConfigMessage('');
+    setConfigStatus('saving');
+    try {
+      const payload = {
+        url: configDraft.url,
+        db_name: configDraft.db_name,
+        username: configDraft.username,
+        country_code: authCountry,
+      };
+      if (configDraft.password) {
+        payload.password = configDraft.password;
+      }
+      const res = await fetch(`${apiBase}/odoo/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'No se pudo guardar la configuración');
+      }
+      const cfg = data && data.config ? data.config : null;
+      if (cfg) {
+        setConfigDraft((prev) => ({
+          ...prev,
+          url: cfg.url || prev.url,
+          db_name: cfg.db_name || prev.db_name,
+          username: cfg.username || prev.username,
+          password: '',
+        }));
+      }
+      setConfigStatus('ready');
+      setConfigMessage('Configuración guardada.');
+      setTestStatus('idle');
+      setTestMessage('');
+    } catch (err) {
+      setConfigStatus('error');
+      setConfigMessage(err && err.message ? err.message : 'Error al guardar');
+    }
+  };
+
+  const handleTestConnection = async () => {
+    if (!isOnline) {
+      setTestStatus('error');
+      setTestMessage('Conéctate para probar la conexión.');
+      return;
+    }
+    setTestStatus('testing');
+    setTestMessage('');
+    try {
+      const payload = {
+        url: configDraft.url,
+        db_name: configDraft.db_name,
+        username: configDraft.username,
+        country_code: authCountry,
+      };
+      if (configDraft.password) payload.password = configDraft.password;
+      const res = await fetch(`${apiBase}/odoo/test-connection`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'No se pudo conectar con Odoo');
+      }
+      const version = data.server_version ? `Versión ${data.server_version}` : 'Conexión OK';
+      setTestStatus('ok');
+      setTestMessage(`${version}${data.uid ? ` · UID ${data.uid}` : ''}`);
+    } catch (err) {
+      setTestStatus('error');
+      setTestMessage(err && err.message ? err.message : 'No se pudo conectar');
+    }
+  };
+
+  return (
+    <div className="card grid">
+      <div className="controls" style={{ justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+        <div>
+          <h1>Configuración</h1>
+          <span className="muted">Conexión con la base de datos de Odoo (xml-rpc).</span>
+        </div>
+        <button className="btn btn-outline" onClick={loadConfig}>Recargar</button>
+      </div>
+
+      <div className="grid" style={{ gap: '0.75rem', border: '1px solid var(--border)', borderRadius: '10px', padding: '0.75rem' }}>
+        <div className="row">
+          <label>URL de Odoo (xml-rpc)</label>
+          <input
+            value={configDraft.url}
+            onChange={(e) => handleDraftChange('url', e.target.value)}
+            placeholder="https://mi-odoo.com/"
+          />
+        </div>
+        <div className="row">
+          <label>Base de datos</label>
+          <input
+            value={configDraft.db_name}
+            onChange={(e) => handleDraftChange('db_name', e.target.value)}
+            placeholder="Nombre de la base de datos"
+          />
+        </div>
+        <div className="row">
+          <label>Usuario</label>
+          <input
+            value={configDraft.username}
+            onChange={(e) => handleDraftChange('username', e.target.value)}
+            placeholder="usuario@empresa.com"
+          />
+        </div>
+        <div className="row">
+          <label>Contraseña</label>
+          <input
+            type="password"
+            value={configDraft.password}
+            onChange={(e) => handleDraftChange('password', e.target.value)}
+            placeholder="Contraseña de Odoo"
+          />
+          {configStatus === 'error' && configMessage && <span className="state error">{configMessage}</span>}
+          {configMessage && configStatus !== 'error' && <span className="state ok">{configMessage}</span>}
+        </div>
+        <div className="controls" style={{ flexWrap: 'wrap' }}>
+          <button className="btn" onClick={handleSaveConfig} disabled={configStatus === 'saving'}>
+            {configStatus === 'saving' ? 'Guardando…' : 'Guardar configuración'}
+          </button>
+          <button className="btn btn-outline" onClick={handleTestConnection} disabled={testStatus === 'testing' || !isOnline}>
+            {testStatus === 'testing' ? 'Probando…' : 'Test conexión'}
+          </button>
+          {!isOnline && <span className="state warning">Sin conexión</span>}
+          {testStatus === 'ok' && testMessage && <span className="state ok">{testMessage}</span>}
+          {testStatus === 'error' && testMessage && <span className="state error">{testMessage}</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ParcelasOdooView({ apiBase, authHeaders, isOnline }) {
+  const [status, setStatus] = React.useState('idle'); // idle | loading | ready | error
+  const [rows, setRows] = React.useState([]);
+  const [error, setError] = React.useState('');
+  const [syncInfo, setSyncInfo] = React.useState('');
+
+  const loadLocal = React.useCallback(async () => {
+    try {
+      const res = await fetch(`${apiBase}/odoo/parcelas/local`, { headers: { ...authHeaders } });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'No se pudieron leer las parcelas locales');
+      const items = Array.isArray(data.items) ? data.items : [];
+      setRows(items);
+      setStatus('ready');
+      setError('');
+    } catch (err) {
+      setStatus('error');
+      setError(err && err.message ? err.message : 'Error al cargar parcelas locales');
+    }
+  }, [apiBase, authHeaders]);
+
+  const load = React.useCallback(async () => {
+    setStatus('loading');
+    setError('');
+    setSyncInfo('');
+    if (!isOnline) {
+      setSyncInfo('Modo offline: mostrando parcelas sincronizadas previamente.');
+      return loadLocal();
+    }
+    try {
+      const syncRes = await fetch(`${apiBase}/odoo/parcelas/sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({}),
+      });
+      const syncData = await syncRes.json().catch(() => ({}));
+      if (!syncRes.ok) {
+        throw new Error(syncData.error || 'No se pudo sincronizar con Odoo');
+      }
+      const synced = Number(syncData.synced) || 0;
+      const ensured = Number(syncData.ensuredParcelas) || 0;
+      setSyncInfo(`Sincronizadas ${synced} parcelas. Nuevas en local: ${ensured}.`);
+    } catch (err) {
+      setSyncInfo('');
+      setStatus('error');
+      setError(err && err.message ? err.message : 'Error al sincronizar con Odoo');
+      return;
+    }
+    await loadLocal();
+  }, [apiBase, authHeaders, isOnline, loadLocal]);
+
+  React.useEffect(() => {
+    load();
+  }, [load]);
+
+  return (
+    <div className="card grid">
+      <div className="controls" style={{ justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+        <div>
+          <h1>Parcelas Odoo</h1>
+          <span className="muted">Listado de parcelas de Odoo sincronizado en local (product.parcel).</span>
+        </div>
+        <button className="btn btn-outline" onClick={load} disabled={status === 'loading'}>
+          {status === 'loading' ? 'Cargando…' : 'Recargar'}
+        </button>
+      </div>
+      {!isOnline && (
+        <span className="state warning">Sin conexión. Usando datos sincronizados previamente.</span>
+      )}
+      {syncInfo && (
+        <span className="state ok">{syncInfo}</span>
+      )}
+      {status === 'error' && error && (
+        <span className="state error">{error}</span>
+      )}
+      {status === 'ready' && rows.length === 0 && (
+        <span className="muted">No se han encontrado parcelas en Odoo.</span>
+      )}
+      {status === 'ready' && rows.length > 0 && (
+        <div className="list">
+          {rows.map((row) => (
+            <div key={row.id} className="list-row" style={{ flexDirection: 'column', alignItems: 'flex-start' }}>
+              <div className="name">
+                #{row.id} · {row.name || '(sin nombre)'}
+              </div>
+              <div className="muted" style={{ fontSize: '0.9rem' }}>
+                Nombre común: {row.common_name || '—'} · Empresa: {row.company || '—'} · % contrato: {row.contract_percentage != null ? String(row.contract_percentage) : '—'}
+              </div>
+              {Array.isArray(row.sigpacs) && row.sigpacs.length > 0 ? (
+                <div style={{ marginTop: '0.35rem', fontSize: '0.9rem' }}>
+                  <strong>SIGPAC:</strong>{' '}
+                  {row.sigpacs.map((sigpac) => (
+                    <span key={`${row.id}-${sigpac.id}`} style={{ display: 'inline-block', marginRight: '0.5rem' }}>
+                      {[
+                        sigpac.municipio || '—',
+                        sigpac.poligono || '—',
+                        sigpac.parcela || '—',
+                        sigpac.recinto || '—',
+                      ].join(' / ')}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <div style={{ marginTop: '0.35rem', fontSize: '0.9rem' }} className="muted">
+                  Sin SIGPAC asignado.
+                </div>
+              )}
+              {row.notes && (
+                <div style={{ marginTop: '0.25rem', fontSize: '0.9rem' }}>
+                  Notas: {row.notes}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MetricsView({ apiBase, authHeaders, countryCode = 'ES' }) {
   const [status, setStatus] = React.useState('idle');
   const [rows, setRows] = React.useState([]);
   const [perParcelaRows, setPerParcelaRows] = React.useState([]);
@@ -3457,6 +4373,7 @@ function MetricsView({ apiBase, authHeaders }) {
   const [parcelSearch, setParcelSearch] = React.useState('');
   const [parajeSearch, setParajeSearch] = React.useState('');
   const [municipioSearch, setMunicipioSearch] = React.useState('');
+  const countryMeta = getCountryMeta(countryCode);
   const isOlivoMode = estimateMode === 'olivos';
   const lowKgsPercent = 100 + lowKgsExtraPercent;
   const equal300Percent = 100 + equal300ExtraPercent;
@@ -4700,7 +5617,7 @@ function MetricsView({ apiBase, authHeaders }) {
   );
 }
 
-function UsersView({ apiBase, authHeaders, appVersion, dbUrl, authUser, authRole }) {
+function UsersView({ apiBase, authHeaders, appVersion, dbUrl, authUser, authRole, onSelfCountryChange }) {
   const [users, setUsers] = React.useState([]);
   const [status, setStatus] = React.useState('idle');
   const [u, setU] = React.useState('');
@@ -4790,6 +5707,9 @@ function UsersView({ apiBase, authHeaders, appVersion, dbUrl, authUser, authRole
             country_code: normalized.country_code,
           },
         }));
+        if (normalized.username === authUser && typeof onSelfCountryChange === 'function') {
+          onSelfCountryChange(normalized.country_code || 'ES');
+        }
       } else {
         alert('No se pudo guardar cambios');
       }

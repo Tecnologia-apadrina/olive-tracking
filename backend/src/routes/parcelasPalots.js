@@ -63,16 +63,16 @@ const fetchRelationWithDetails = async (relationId, countryCode) => {
   return db.public.one(
     `SELECT pp.id,
             par.id   AS parcela_id,
-            par.nombre AS parcela_nombre,
+            COALESCE(op.name, par.nombre) AS parcela_nombre,
             par.sigpac_municipio,
             par.sigpac_poligono,
             par.sigpac_parcela,
             par.sigpac_recinto,
             par.variedad   AS parcela_variedad,
-            par.porcentaje AS parcela_porcentaje,
+            COALESCE(op.contract_percentage, par.porcentaje) AS parcela_porcentaje,
             par.num_olivos AS parcela_num_olivos,
             par.hectareas  AS parcela_hectareas,
-            par.nombre_interno AS parcela_nombre_interno,
+            COALESCE(op.common_name, par.nombre_interno) AS parcela_nombre_interno,
             par.paraje_id AS parcela_paraje_id,
             pj.nombre AS parcela_paraje_nombre,
             p.id     AS palot_id,
@@ -87,17 +87,70 @@ const fetchRelationWithDetails = async (relationId, countryCode) => {
             COALESCE((
               SELECT json_agg(json_build_object('id', e.id, 'nombre', e.nombre) ORDER BY e.nombre)
                 FROM parcelas_etiquetas pe
-                JOIN etiquetas e ON e.id = pe.id_etiqueta
+                JOIN etiquetas e ON e.id = pe.id_etiqueta AND e.country_code = par.country_code
                WHERE pe.id_parcela = par.id
             ), '[]'::json) AS parcela_etiquetas
        FROM parcelas_palots pp
        JOIN parcelas par ON par.id = pp.id_parcela AND par.country_code = pp.country_code
+       LEFT JOIN odoo_parcelas op ON op.id = par.id AND op.country_code = par.country_code
        LEFT JOIN parajes pj ON pj.id = par.paraje_id AND pj.country_code = par.country_code
        JOIN palots   p   ON p.id = pp.id_palot AND p.country_code = pp.country_code
        LEFT JOIN users  u ON u.id = pp.id_usuario
       WHERE pp.id = $1 AND pp.country_code = $2`,
     [relationId, countryCode]
   );
+};
+
+// Garantiza que la parcela existe en la tabla principal.
+// Si no existe, intenta crear un stub a partir de odoo_parcelas o de los datos de fallback.
+const ensureParcelaExists = async (parcelaId, countryCode, fallback = {}) => {
+  if (!Number.isInteger(parcelaId) || parcelaId <= 0) return false;
+  try {
+    await db.public.one(
+      'SELECT id FROM parcelas WHERE id = $1 AND country_code = $2',
+      [parcelaId, countryCode]
+    );
+    return true;
+  } catch (_) {}
+
+  // Buscar en tabla odoo_parcelas
+  let odooRow = null;
+  try {
+    const rows = await db.public.many(
+      'SELECT id, name, common_name, contract_percentage FROM odoo_parcelas WHERE id = $1 AND country_code = $2 LIMIT 1',
+      [parcelaId, countryCode]
+    );
+    odooRow = Array.isArray(rows) && rows[0] ? rows[0] : null;
+  } catch (_) {
+    odooRow = null;
+  }
+
+  const nombre = (odooRow && odooRow.name) || fallback.nombre || null;
+  const nombreInterno = (odooRow && odooRow.common_name) || fallback.nombre_interno || null;
+  const porcentaje = odooRow && odooRow.contract_percentage != null
+    ? Number(odooRow.contract_percentage)
+    : (fallback.porcentaje != null ? fallback.porcentaje : null);
+
+  try {
+    await db.public.none(
+      `INSERT INTO parcelas(id, nombre, nombre_interno, porcentaje, country_code)
+       VALUES($1, $2, $3, $4, $5)
+       ON CONFLICT (id) DO NOTHING`,
+      [parcelaId, nombre, nombreInterno, porcentaje, countryCode]
+    );
+  } catch (_) {
+    // Ignorar errores de inserción; volveremos a comprobar
+  }
+
+  try {
+    await db.public.one(
+      'SELECT id FROM parcelas WHERE id = $1 AND country_code = $2',
+      [parcelaId, countryCode]
+    );
+    return true;
+  } catch (_) {
+    return false;
+  }
 };
 
 const parseRequiredNumber = (value, field = 'valor') => {
@@ -148,12 +201,12 @@ router.post('/parcelas/:parcelaId/palots', async (req, res) => {
   if (!Number.isInteger(palotNumericId) || palotNumericId <= 0) {
     return res.status(400).json({ error: 'palot_id inválido' });
   }
-  try {
-    await db.public.one(
-      'SELECT id FROM parcelas WHERE id = $1 AND country_code = $2',
-      [parcelaNumericId, countryCode]
-    );
-  } catch (_) {
+  const ensuredParcela = await ensureParcelaExists(parcelaNumericId, countryCode, {
+    nombre: (req.body && req.body.parcela_nombre) || null,
+    nombre_interno: (req.body && req.body.parcela_nombre_interno) || null,
+    porcentaje: req.body && req.body.parcela_porcentaje != null ? req.body.parcela_porcentaje : null,
+  });
+  if (!ensuredParcela) {
     return res.status(404).json({ error: 'Parcela no encontrada' });
   }
   try {
@@ -250,16 +303,16 @@ router.get('/parcelas-palots', async (req, res) => {
     const rows = await db.public.many(
       `SELECT pp.id,
               par.id   AS parcela_id,
-              par.nombre AS parcela_nombre,
+              COALESCE(op.name, par.nombre) AS parcela_nombre,
               par.sigpac_municipio,
               par.sigpac_poligono,
               par.sigpac_parcela,
               par.sigpac_recinto,
               par.variedad   AS parcela_variedad,
-              par.porcentaje AS parcela_porcentaje,
+              COALESCE(op.contract_percentage, par.porcentaje) AS parcela_porcentaje,
               par.num_olivos AS parcela_num_olivos,
               par.hectareas AS parcela_hectareas,
-              par.nombre_interno AS parcela_nombre_interno,
+              COALESCE(op.common_name, par.nombre_interno) AS parcela_nombre_interno,
               par.paraje_id AS parcela_paraje_id,
               pj.nombre AS parcela_paraje_nombre,
               p.id     AS palot_id,
@@ -279,6 +332,7 @@ router.get('/parcelas-palots', async (req, res) => {
               ), '[]'::json) AS parcela_etiquetas
          FROM parcelas_palots pp
          JOIN parcelas par ON par.id = pp.id_parcela AND par.country_code = pp.country_code
+         LEFT JOIN odoo_parcelas op ON op.id = par.id AND op.country_code = par.country_code
          LEFT JOIN parajes pj ON pj.id = par.paraje_id AND pj.country_code = par.country_code
          JOIN palots   p   ON p.id = pp.id_palot AND p.country_code = pp.country_code
          LEFT JOIN users  u ON u.id = pp.id_usuario

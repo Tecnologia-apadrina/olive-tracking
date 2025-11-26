@@ -99,6 +99,43 @@ const SCHEMA_SQL_BASE = `
 
   CREATE INDEX IF NOT EXISTS idx_parcela_activities_parcela ON parcela_activities(parcela_id);
   CREATE INDEX IF NOT EXISTS idx_parcela_activities_created_at ON parcela_activities(created_at);
+
+  CREATE TABLE IF NOT EXISTS odoo_configs (
+    id SERIAL PRIMARY KEY,
+    url TEXT NOT NULL,
+    db_name TEXT NOT NULL,
+    username TEXT NOT NULL,
+    password TEXT NOT NULL,
+    country_code TEXT NOT NULL DEFAULT 'ES',
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE(country_code)
+  );
+
+  CREATE TABLE IF NOT EXISTS odoo_parcelas (
+    id INTEGER NOT NULL,
+    name TEXT,
+    common_name TEXT,
+    company TEXT,
+    contract_percentage NUMERIC,
+    notes TEXT,
+    country_code TEXT NOT NULL DEFAULT 'ES',
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (id, country_code)
+  );
+
+  CREATE TABLE IF NOT EXISTS odoo_parcel_sigpacs (
+    id INTEGER NOT NULL,
+    parcel_id INTEGER NOT NULL,
+    municipio TEXT,
+    poligono TEXT,
+    parcela TEXT,
+    recinto TEXT,
+    country_code TEXT NOT NULL DEFAULT 'ES',
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (id, country_code)
+  );
+  CREATE INDEX IF NOT EXISTS idx_odoo_parcel_sigpacs_parcel_country ON odoo_parcel_sigpacs(parcel_id, country_code);
 `;
 
 // Postgres-only migrations to evolve existing DBs.
@@ -170,6 +207,43 @@ const SCHEMA_SQL_ALTER = `
   ALTER TABLE IF EXISTS parcela_activities ADD COLUMN IF NOT EXISTS country_code TEXT NOT NULL DEFAULT 'ES';
   CREATE INDEX IF NOT EXISTS idx_parcela_activities_parcela ON parcela_activities(parcela_id);
   CREATE INDEX IF NOT EXISTS idx_parcela_activities_created_at ON parcela_activities(created_at);
+
+  CREATE TABLE IF NOT EXISTS odoo_configs (
+    id SERIAL PRIMARY KEY,
+    url TEXT NOT NULL,
+    db_name TEXT NOT NULL,
+    username TEXT NOT NULL,
+    password TEXT NOT NULL,
+    country_code TEXT NOT NULL DEFAULT 'ES',
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE(country_code)
+  );
+
+  CREATE TABLE IF NOT EXISTS odoo_parcelas (
+    id INTEGER NOT NULL,
+    name TEXT,
+    common_name TEXT,
+    company TEXT,
+    contract_percentage NUMERIC,
+    notes TEXT,
+    country_code TEXT NOT NULL DEFAULT 'ES',
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (id, country_code)
+  );
+
+  CREATE TABLE IF NOT EXISTS odoo_parcel_sigpacs (
+    id INTEGER NOT NULL,
+    parcel_id INTEGER NOT NULL,
+    municipio TEXT,
+    poligono TEXT,
+    parcela TEXT,
+    recinto TEXT,
+    country_code TEXT NOT NULL DEFAULT 'ES',
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (id, country_code)
+  );
+  CREATE INDEX IF NOT EXISTS idx_odoo_parcel_sigpacs_parcel_country ON odoo_parcel_sigpacs(parcel_id, country_code);
 `;
 
 const forceMem = (process.env.USE_MEM || '').toLowerCase() === '1' || (process.env.USE_MEM || '').toLowerCase() === 'true';

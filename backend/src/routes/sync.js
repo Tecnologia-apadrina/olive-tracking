@@ -18,25 +18,43 @@ router.get('/sync/snapshot', async (req, res) => {
       activityTypes,
       activities,
     ] = await Promise.all([
-      db.public.many(`SELECT par.*, pj.nombre AS paraje_nombre
-                        FROM parcelas par
-                        LEFT JOIN parajes pj ON pj.id = par.paraje_id AND pj.country_code = par.country_code
-                       WHERE par.country_code = $1
-                       ORDER BY par.id`, [countryCode]),
+      db.public.many(
+        `SELECT
+            par.id,
+            COALESCE(op.name, par.nombre) AS nombre,
+            COALESCE(op.common_name, par.nombre_interno) AS nombre_interno,
+            par.sigpac_municipio,
+            par.sigpac_poligono,
+            par.sigpac_parcela,
+            par.sigpac_recinto,
+            par.variedad,
+            COALESCE(op.contract_percentage, par.porcentaje) AS porcentaje,
+            par.num_olivos,
+            par.hectareas,
+            par.paraje_id,
+            pj.nombre AS paraje_nombre,
+            par.country_code
+         FROM parcelas par
+         LEFT JOIN odoo_parcelas op ON op.id = par.id AND op.country_code = par.country_code
+         LEFT JOIN parajes pj ON pj.id = par.paraje_id AND pj.country_code = par.country_code
+        WHERE par.country_code = $1
+        ORDER BY par.id`,
+        [countryCode]
+      ),
       db.public.many('SELECT * FROM olivos WHERE country_code = $1 ORDER BY id', [countryCode]),
       db.public.many('SELECT * FROM palots WHERE country_code = $1 ORDER BY id', [countryCode]),
       db.public.many(`SELECT pp.id,
                              par.id   AS parcela_id,
-                             par.nombre AS parcela_nombre,
+                             COALESCE(op.name, par.nombre) AS parcela_nombre,
                              par.sigpac_municipio,
                              par.sigpac_poligono,
                              par.sigpac_parcela,
                              par.sigpac_recinto,
                              par.variedad   AS parcela_variedad,
-                             par.porcentaje AS parcela_porcentaje,
+                             COALESCE(op.contract_percentage, par.porcentaje) AS parcela_porcentaje,
                              par.num_olivos AS parcela_num_olivos,
                              par.hectareas  AS parcela_hectareas,
-                             par.nombre_interno AS parcela_nombre_interno,
+                             COALESCE(op.common_name, par.nombre_interno) AS parcela_nombre_interno,
                              par.paraje_id AS parcela_paraje_id,
                              pj.nombre AS parcela_paraje_nombre,
                              p.id     AS palot_id,
@@ -56,6 +74,7 @@ router.get('/sync/snapshot', async (req, res) => {
                              ), '[]'::json) AS parcela_etiquetas
                         FROM parcelas_palots pp
                         JOIN parcelas par ON par.id = pp.id_parcela AND par.country_code = pp.country_code
+                        LEFT JOIN odoo_parcelas op ON op.id = par.id AND op.country_code = par.country_code
                         LEFT JOIN parajes pj ON pj.id = par.paraje_id AND pj.country_code = par.country_code
                         JOIN palots   p   ON p.id = pp.id_palot AND p.country_code = pp.country_code
                         LEFT JOIN users  u ON u.id = pp.id_usuario
@@ -75,8 +94,8 @@ router.get('/sync/snapshot', async (req, res) => {
       db.public.many(
         `SELECT pa.id,
                 pa.parcela_id,
-                par.nombre AS parcela_nombre,
-                par.nombre_interno AS parcela_nombre_interno,
+                COALESCE(op.name, par.nombre) AS parcela_nombre,
+                COALESCE(op.common_name, par.nombre_interno) AS parcela_nombre_interno,
                 par.sigpac_municipio,
                 par.sigpac_poligono,
                 par.sigpac_parcela,
@@ -94,6 +113,7 @@ router.get('/sync/snapshot', async (req, res) => {
                 u.username AS created_by_username
            FROM parcela_activities pa
            JOIN parcelas par ON par.id = pa.parcela_id AND par.country_code = pa.country_code
+           LEFT JOIN odoo_parcelas op ON op.id = par.id AND op.country_code = par.country_code
            LEFT JOIN parajes pj ON pj.id = par.paraje_id AND pj.country_code = par.country_code
            JOIN activity_types at ON at.id = pa.activity_type_id AND at.country_code = pa.country_code
            LEFT JOIN users u ON u.id = pa.created_by

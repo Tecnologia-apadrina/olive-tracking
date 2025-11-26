@@ -217,7 +217,10 @@ router.get('/metrics/harvest', requireAuth, requireAdminOrMetrics, async (req, r
       })
       .filter(Boolean);
 
-    const parcelOptionsRaw = await db.public.many('SELECT id, nombre FROM parcelas ORDER BY nombre');
+    const parcelOptionsRaw = await db.public.many(
+      'SELECT id, nombre FROM parcelas WHERE country_code = $1 ORDER BY nombre',
+      [countryCode]
+    );
     const parcelOptions = parcelOptionsRaw
       .map((row) => {
         const id = Number(row.id);
@@ -231,7 +234,10 @@ router.get('/metrics/harvest', requireAuth, requireAdminOrMetrics, async (req, r
         return a.id - b.id;
       });
 
-    const parajeOptionsRaw = await db.public.many('SELECT id, nombre FROM parajes ORDER BY nombre');
+    const parajeOptionsRaw = await db.public.many(
+      'SELECT id, nombre FROM parajes WHERE country_code = $1 ORDER BY nombre',
+      [countryCode]
+    );
     const parajeOptions = parajeOptionsRaw
       .map((row) => {
         const id = Number(row.id);
@@ -250,7 +256,9 @@ router.get('/metrics/harvest', requireAuth, requireAdminOrMetrics, async (req, r
          FROM parcelas
         WHERE sigpac_municipio IS NOT NULL
           AND sigpac_municipio <> ''
-        ORDER BY sigpac_municipio`
+          AND country_code = $1
+        ORDER BY sigpac_municipio`,
+      [countryCode]
     );
     const municipioOptions = municipioOptionsRaw
       .map((row) => {

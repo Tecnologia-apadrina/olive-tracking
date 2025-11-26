@@ -1,6 +1,9 @@
 FROM node:20-alpine AS base
 WORKDIR /app
 
+# Install pg_dump (PostgreSQL client) for backups
+RUN apk add --no-cache postgresql-client
+
 # Install only production deps
 COPY package*.json ./
 RUN npm ci --only=production
