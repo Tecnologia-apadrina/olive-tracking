@@ -119,6 +119,7 @@ const SCHEMA_SQL_BASE = `
     company TEXT,
     contract_percentage NUMERIC,
     notes TEXT,
+    landscape_id INTEGER,
     country_code TEXT NOT NULL DEFAULT 'ES',
     updated_at TIMESTAMPTZ DEFAULT now(),
     PRIMARY KEY (id, country_code)
@@ -136,6 +137,26 @@ const SCHEMA_SQL_BASE = `
     PRIMARY KEY (id, country_code)
   );
   CREATE INDEX IF NOT EXISTS idx_odoo_parcel_sigpacs_parcel_country ON odoo_parcel_sigpacs(parcel_id, country_code);
+
+  CREATE TABLE IF NOT EXISTS odoo_landscapes (
+    id INTEGER NOT NULL,
+    name TEXT,
+    country_code TEXT NOT NULL DEFAULT 'ES',
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (id, country_code)
+  );
+
+  CREATE TABLE IF NOT EXISTS odoo_olivos (
+    id INTEGER NOT NULL,
+    name TEXT,
+    default_code TEXT,
+    parcel_id INTEGER,
+    product_tmpl_id INTEGER,
+    country_code TEXT NOT NULL DEFAULT 'ES',
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (id, country_code)
+  );
+  CREATE INDEX IF NOT EXISTS idx_odoo_olivos_parcel_country ON odoo_olivos(parcel_id, country_code);
 `;
 
 // Postgres-only migrations to evolve existing DBs.
@@ -227,6 +248,7 @@ const SCHEMA_SQL_ALTER = `
     company TEXT,
     contract_percentage NUMERIC,
     notes TEXT,
+    landscape_id INTEGER,
     country_code TEXT NOT NULL DEFAULT 'ES',
     updated_at TIMESTAMPTZ DEFAULT now(),
     PRIMARY KEY (id, country_code)
@@ -244,6 +266,27 @@ const SCHEMA_SQL_ALTER = `
     PRIMARY KEY (id, country_code)
   );
   CREATE INDEX IF NOT EXISTS idx_odoo_parcel_sigpacs_parcel_country ON odoo_parcel_sigpacs(parcel_id, country_code);
+  ALTER TABLE IF EXISTS odoo_parcelas ADD COLUMN IF NOT EXISTS landscape_id INTEGER;
+
+  CREATE TABLE IF NOT EXISTS odoo_landscapes (
+    id INTEGER NOT NULL,
+    name TEXT,
+    country_code TEXT NOT NULL DEFAULT 'ES',
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (id, country_code)
+  );
+
+  CREATE TABLE IF NOT EXISTS odoo_olivos (
+    id INTEGER NOT NULL,
+    name TEXT,
+    default_code TEXT,
+    parcel_id INTEGER,
+    product_tmpl_id INTEGER,
+    country_code TEXT NOT NULL DEFAULT 'ES',
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (id, country_code)
+  );
+  CREATE INDEX IF NOT EXISTS idx_odoo_olivos_parcel_country ON odoo_olivos(parcel_id, country_code);
 `;
 
 const forceMem = (process.env.USE_MEM || '').toLowerCase() === '1' || (process.env.USE_MEM || '').toLowerCase() === 'true';
@@ -288,6 +331,7 @@ if (connectionString) {
       await pool.query(sql, params);
       return;
     },
+    result: async (sql, params = []) => pool.query(sql, params),
   };
 
   module.exports = { public: publicApi, _pool: pool };
@@ -318,6 +362,7 @@ if (connectionString) {
       }
     },
     none: async (sql, params = []) => mem.public.none(sql, params),
+    result: async (sql, params = []) => mem.public.query(sql, params),
   };
 
   module.exports = { public: publicApi, _mem: mem };

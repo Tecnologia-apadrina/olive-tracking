@@ -109,11 +109,27 @@ router.get('/parcelas', requireAuth, requireAdmin, async (req, res) => {
   const countryCode = resolveRequestCountry(req);
   try {
     const rows = await db.public.many(
-      `SELECT par.*, pj.nombre AS paraje_nombre
-         FROM parcelas par
-         LEFT JOIN parajes pj ON pj.id = par.paraje_id AND pj.country_code = par.country_code
-        WHERE par.country_code = $1
-        ORDER BY par.id`,
+      `SELECT
+          par.id,
+          COALESCE(op.name, par.nombre) AS nombre,
+          COALESCE(op.common_name, par.nombre_interno) AS nombre_interno,
+          par.sigpac_municipio,
+          par.sigpac_poligono,
+          par.sigpac_parcela,
+          par.sigpac_recinto,
+          par.variedad,
+          COALESCE(op.contract_percentage, par.porcentaje) AS porcentaje,
+          par.num_olivos,
+          par.hectareas,
+          COALESCE(op.landscape_id, par.paraje_id) AS paraje_id,
+          COALESCE(ol.name, pj.nombre) AS paraje_nombre,
+          par.country_code
+       FROM parcelas par
+       LEFT JOIN odoo_parcelas op ON op.id = par.id AND op.country_code = par.country_code
+       LEFT JOIN odoo_landscapes ol ON ol.id = COALESCE(op.landscape_id, par.paraje_id) AND ol.country_code = par.country_code
+       LEFT JOIN parajes pj ON pj.id = par.paraje_id AND pj.country_code = par.country_code
+      WHERE par.country_code = $1
+      ORDER BY par.id`,
       [countryCode]
     );
     res.json(rows);

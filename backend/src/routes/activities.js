@@ -25,14 +25,14 @@ const fetchActivityWithDetails = async (activityId, countryCode) => {
   return db.public.one(
     `SELECT pa.id,
             pa.parcela_id,
-            par.nombre AS parcela_nombre,
-            par.nombre_interno AS parcela_nombre_interno,
+            COALESCE(op.name, par.nombre) AS parcela_nombre,
+            COALESCE(op.common_name, par.nombre_interno) AS parcela_nombre_interno,
             par.sigpac_municipio,
             par.sigpac_poligono,
             par.sigpac_parcela,
             par.sigpac_recinto,
-            par.paraje_id AS parcela_paraje_id,
-            pj.nombre AS parcela_paraje_nombre,
+            COALESCE(op.landscape_id, par.paraje_id) AS parcela_paraje_id,
+            COALESCE(ol.name, pj.nombre) AS parcela_paraje_nombre,
             pa.olivo_id,
             pa.activity_type_id,
             at.nombre AS activity_type_nombre,
@@ -44,6 +44,8 @@ const fetchActivityWithDetails = async (activityId, countryCode) => {
             u.username AS created_by_username
        FROM parcela_activities pa
        JOIN parcelas par ON par.id = pa.parcela_id AND par.country_code = pa.country_code
+       LEFT JOIN odoo_parcelas op ON op.id = par.id AND op.country_code = par.country_code
+       LEFT JOIN odoo_landscapes ol ON ol.id = COALESCE(op.landscape_id, par.paraje_id) AND ol.country_code = par.country_code
        LEFT JOIN parajes pj ON pj.id = par.paraje_id AND pj.country_code = par.country_code
        JOIN activity_types at ON at.id = pa.activity_type_id AND at.country_code = pa.country_code
        LEFT JOIN users u ON u.id = pa.created_by
@@ -55,14 +57,14 @@ const fetchActivityWithDetails = async (activityId, countryCode) => {
 const listActivitiesQueryBase = `
   SELECT pa.id,
          pa.parcela_id,
-         par.nombre AS parcela_nombre,
-         par.nombre_interno AS parcela_nombre_interno,
+         COALESCE(op.name, par.nombre) AS parcela_nombre,
+         COALESCE(op.common_name, par.nombre_interno) AS parcela_nombre_interno,
          par.sigpac_municipio,
          par.sigpac_poligono,
          par.sigpac_parcela,
          par.sigpac_recinto,
-         par.paraje_id AS parcela_paraje_id,
-         pj.nombre AS parcela_paraje_nombre,
+         COALESCE(op.landscape_id, par.paraje_id) AS parcela_paraje_id,
+         COALESCE(ol.name, pj.nombre) AS parcela_paraje_nombre,
          pa.olivo_id,
          pa.activity_type_id,
          at.nombre AS activity_type_nombre,
@@ -74,6 +76,8 @@ const listActivitiesQueryBase = `
          u.username AS created_by_username
     FROM parcela_activities pa
     JOIN parcelas par ON par.id = pa.parcela_id AND par.country_code = pa.country_code
+    LEFT JOIN odoo_parcelas op ON op.id = par.id AND op.country_code = par.country_code
+    LEFT JOIN odoo_landscapes ol ON ol.id = COALESCE(op.landscape_id, par.paraje_id) AND ol.country_code = par.country_code
     LEFT JOIN parajes pj ON pj.id = par.paraje_id AND pj.country_code = par.country_code
     JOIN activity_types at ON at.id = pa.activity_type_id AND at.country_code = pa.country_code
     LEFT JOIN users u ON u.id = pa.created_by
@@ -166,12 +170,18 @@ router.post('/activities', requireAuth, async (req, res) => {
   let olivoRow;
   try {
     olivoRow = await db.public.one(
-      `SELECT o.id, o.id_parcela, par.nombre
+      `SELECT oo.id,
+              COALESCE(oo.parcel_id, o.id_parcela) AS id_parcela
+         FROM odoo_olivos oo
+         LEFT JOIN olivos o ON o.id = oo.id AND o.country_code = $2
+        WHERE oo.id = $1 AND oo.country_code = $2`,
+      [olivoId, countryCode]
+    ).catch(async () => db.public.one(
+      `SELECT o.id, o.id_parcela
          FROM olivos o
-         JOIN parcelas par ON par.id = o.id_parcela AND par.country_code = o.country_code
         WHERE o.id = $1 AND o.country_code = $2`,
       [olivoId, countryCode]
-    );
+    ));
   } catch (error) {
     return res.status(400).json({ error: 'Olivo inexistente' });
   }

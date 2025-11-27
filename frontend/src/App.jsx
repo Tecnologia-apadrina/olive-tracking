@@ -12,6 +12,7 @@ import {
   enqueueRelation,
   getParcelaByOlivo as offlineGetParcelaByOlivo,
   getParcelaById,
+  findOlivoByCodigo,
   getPendingOps,
   getLastSnapshotIso,
   listEtiquetas,
@@ -474,10 +475,6 @@ function App() {
 
   // Debounced lookup for olivo -> parcela
   useEffect(() => {
-    if (odooOlivo && odooOlivo.trim() !== '') {
-      // Cuando usamos el buscador de Odoo ignoramos la BBDD local.
-      return;
-    }
     if (preferOdooParcelaRef.current && odooLookupStatus === 'success' && parcelaId) {
       // Si ya tenemos parcela de Odoo, no pisar con el flujo local.
       return;
@@ -527,7 +524,7 @@ function App() {
         if (!parcelaData) {
           throw new Error('No encontrado');
         }
-        setParcelaNombre(parcelaData.nombre || '');
+        setParcelaNombre(parcelaData.nombre || parcelaData.nombre_interno || '');
         setParcelaId(parcelaData && parcelaData.id !== undefined ? parcelaData.id : null);
         setParcelaPct(parcelaData && parcelaData.porcentaje !== undefined ? parcelaData.porcentaje : null);
         if (parcelaData && parcelaData.id != null) {
@@ -565,7 +562,7 @@ function App() {
     };
   }, [olivo, isOnline, authToken, odooLookupStatus, parcelaId]);
 
-  // Debounced lookup for olivo -> parcela using Odoo (category "Olivo")
+  // Debounced lookup for olivo -> parcela using datos cacheados de Odoo
   useEffect(() => {
     if (odooDebounceRef.current) {
       clearTimeout(odooDebounceRef.current);
@@ -585,36 +582,21 @@ function App() {
     odooDebounceRef.current = setTimeout(async () => {
       setOdooLookupStatus('loading');
       try {
-        if (!isOnline) {
-          throw new Error('offline');
-        }
-        const res = await fetch(`${apiBase}/odoo/olivos/lookup`, {
-          method: 'POST',
-          headers: {
-            ...authHeaders,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ reference: odooOlivo }),
-        });
-        if (res.status === 401) {
-          throw new Error('No autenticado');
-        }
-        if (res.status === 404) {
+        const olivoRecord = await findOlivoByCodigo(odooOlivo);
+        if (!olivoRecord) {
           throw new Error('not-found');
         }
-        if (!res.ok) {
-          throw new Error('network');
-        }
-        const data = await res.json();
-        const parcelaNombreOdoo = data.parcela_nombre || '';
-        const parcelaPctOdoo = data.contract_percentage != null ? Number(data.contract_percentage) : null;
-        const parcelaIdOdoo = data.parcela_id != null ? Number(data.parcela_id) : null;
-
-        // Guardamos también en el estado "global" de parcela
-        // para que la relación palot-parcela use el id de Odoo.
+        const parcelaIdOdoo = Number(olivoRecord.id_parcela);
         if (Number.isInteger(parcelaIdOdoo) && parcelaIdOdoo > 0) {
           setParcelaId(parcelaIdOdoo);
         }
+        const parcelaData = Number.isInteger(parcelaIdOdoo)
+          ? await getParcelaById(parcelaIdOdoo)
+          : null;
+        const parcelaNombreOdoo = parcelaData?.nombre || parcelaData?.nombre_interno || '';
+        const parcelaPctOdoo = parcelaData && parcelaData.porcentaje != null
+          ? Number(parcelaData.porcentaje)
+          : null;
         setParcelaNombre(parcelaNombreOdoo);
         setParcelaPct(parcelaPctOdoo);
         preferOdooParcelaRef.current = true;
@@ -632,12 +614,12 @@ function App() {
         setOdooLookupStatus('error');
         preferOdooParcelaRef.current = false;
       }
-    }, 800);
+    }, 400);
 
     return () => {
       if (odooDebounceRef.current) clearTimeout(odooDebounceRef.current);
     };
-  }, [odooOlivo, isOnline, authToken]);
+  }, [odooOlivo, offlineReady]);
 
   const beginRelationsRefresh = () => {
     relationsRefreshCounter.current += 1;
@@ -1217,7 +1199,7 @@ function App() {
   const pendingPalotsCount = palotList.length + (toStringSafe(palotInput).trim() ? 1 : 0);
   const isOlivoLocked = palotList.length > 0 || saveStatus === 'saving';
   const palotKgsTrimmed = toStringSafe(palotKgs).trim();
-  const hasParcelaReady = odooLookupStatus === 'success' && !!parcelaId;
+  const hasParcelaReady = !!parcelaId && (status === 'success' || odooLookupStatus === 'success');
   const canSave = hasParcelaReady
     && !!parcelaId
     && pendingPalotsCount > 0
@@ -4226,19 +4208,47 @@ function ParcelasOdooView({ apiBase, authHeaders, isOnline }) {
   const [rows, setRows] = React.useState([]);
   const [error, setError] = React.useState('');
   const [syncInfo, setSyncInfo] = React.useState('');
+  const [localCounts, setLocalCounts] = React.useState({ parcelas: 0, parajes: 0, olivos: 0 });
+  const [syncMeta, setSyncMeta] = React.useState({ parcelas: null, olivos: null });
+  const formatSyncDate = React.useCallback((iso) => {
+    if (!iso) return 'Nunca sincronizado';
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return 'Nunca sincronizado';
+    return date.toLocaleString('es-ES', { dateStyle: 'short', timeStyle: 'short' });
+  }, []);
 
   const loadLocal = React.useCallback(async () => {
     try {
-      const res = await fetch(`${apiBase}/odoo/parcelas/local`, { headers: { ...authHeaders } });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'No se pudieron leer las parcelas locales');
-      const items = Array.isArray(data.items) ? data.items : [];
+      const [parcelRes, parajeRes, olivoRes] = await Promise.all([
+        fetch(`${apiBase}/odoo/parcelas/local`, { headers: { ...authHeaders } }),
+        fetch(`${apiBase}/odoo/parajes/local`, { headers: { ...authHeaders } }),
+        fetch(`${apiBase}/odoo/olivos/local`, { headers: { ...authHeaders } }),
+      ]);
+      const parcelData = await parcelRes.json().catch(() => ({}));
+      if (!parcelRes.ok) throw new Error(parcelData.error || 'No se pudieron leer las parcelas locales');
+      const parajeData = await parajeRes.json().catch(() => ({}));
+      if (!parajeRes.ok) throw new Error(parajeData.error || 'No se pudieron leer los parajes locales');
+      const olivoData = await olivoRes.json().catch(() => ({}));
+      if (!olivoRes.ok) throw new Error(olivoData.error || 'No se pudieron leer los olivos locales');
+      const items = Array.isArray(parcelData.items) ? parcelData.items : [];
+      const parajeItems = Array.isArray(parajeData.items) ? parajeData.items : [];
+      const olivoItems = Array.isArray(olivoData.items) ? olivoData.items : [];
       setRows(items);
+      setLocalCounts({
+        parcelas: items.length,
+        parajes: parajeItems.length,
+        olivos: olivoItems.length,
+      });
+      setSyncMeta({
+        parcelas: parcelData.last_sync_at || null,
+        olivos: olivoData.last_sync_at || null,
+      });
       setStatus('ready');
       setError('');
     } catch (err) {
       setStatus('error');
       setError(err && err.message ? err.message : 'Error al cargar parcelas locales');
+      setSyncMeta({ parcelas: null, olivos: null });
     }
   }, [apiBase, authHeaders]);
 
@@ -4262,7 +4272,24 @@ function ParcelasOdooView({ apiBase, authHeaders, isOnline }) {
       }
       const synced = Number(syncData.synced) || 0;
       const ensured = Number(syncData.ensuredParcelas) || 0;
-      setSyncInfo(`Sincronizadas ${synced} parcelas. Nuevas en local: ${ensured}.`);
+      const landscapesSynced = Number(syncData.landscapesSynced) || 0;
+      let olivosMessage = '';
+      try {
+        const olivoRes = await fetch(`${apiBase}/odoo/olivos/sync`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders },
+          body: JSON.stringify({}),
+        });
+        const olivoData = await olivoRes.json().catch(() => ({}));
+        if (!olivoRes.ok) {
+          throw new Error(olivoData.error || 'No se pudieron sincronizar los olivos');
+        }
+        const syncedOlivos = Number(olivoData.synced) || 0;
+        olivosMessage = ` Olivos sincronizados: ${syncedOlivos}.`;
+      } catch (syncErr) {
+        olivosMessage = ` Aviso: no se pudieron sincronizar olivos (${syncErr && syncErr.message ? syncErr.message : 'error'}).`;
+      }
+      setSyncInfo(`Sincronizadas ${synced} parcelas (parajes ${landscapesSynced}). Nuevas en local: ${ensured}.${olivosMessage}`);
     } catch (err) {
       setSyncInfo('');
       setStatus('error');
@@ -4289,6 +4316,16 @@ function ParcelasOdooView({ apiBase, authHeaders, isOnline }) {
       </div>
       {!isOnline && (
         <span className="state warning">Sin conexión. Usando datos sincronizados previamente.</span>
+      )}
+      {status === 'ready' && (
+        <div className="muted" style={{ marginBottom: '0.5rem' }}>
+          Caché local → Parcelas: {localCounts.parcelas} · Parajes: {localCounts.parajes} · Olivos: {localCounts.olivos}
+        </div>
+      )}
+      {status === 'ready' && (
+        <div className="muted" style={{ marginBottom: '0.5rem' }}>
+          Última sync parcelas: {formatSyncDate(syncMeta.parcelas)} · Olivos: {formatSyncDate(syncMeta.olivos)}
+        </div>
       )}
       {syncInfo && (
         <span className="state ok">{syncInfo}</span>
@@ -5653,6 +5690,7 @@ function UsersView({ apiBase, authHeaders, appVersion, dbUrl, authUser, authRole
       setDrafts(d);
       setStatus('ready');
     } catch (e) {
+      setLastSync(null);
       setStatus('error');
     }
   };
@@ -5808,17 +5846,26 @@ export default App;
 function OlivosView({ apiBase, authHeaders }) {
   const [rows, setRows] = React.useState([]);
   const [status, setStatus] = React.useState('idle');
-  const [oCsv, setOCsv] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const [msg, setMsg] = React.useState('');
-  const [result, setResult] = React.useState(null);
+  const [lastSync, setLastSync] = React.useState(null);
+  const formatSyncDate = React.useCallback((iso) => {
+    if (!iso) return 'Nunca sincronizado';
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return 'Nunca sincronizado';
+    return date.toLocaleString('es-ES', { dateStyle: 'short', timeStyle: 'short' });
+  }, []);
   const load = async () => {
     setStatus('loading');
     try {
       const res = await fetch(`${apiBase}/olivos`, { headers: { ...authHeaders } });
       if (!res.ok) throw new Error('No autorizado');
       const data = await res.json();
-      setRows(Array.isArray(data) ? data : []);
+      const items = Array.isArray(data)
+        ? data
+        : (Array.isArray(data?.items) ? data.items : []);
+      setRows(items);
+      setLastSync(data?.last_sync_at || null);
       setStatus('ready');
     } catch (e) {
       setStatus('error');
@@ -5826,79 +5873,35 @@ function OlivosView({ apiBase, authHeaders }) {
   };
   React.useEffect(() => { load(); }, []);
 
-  const readFile = (file, setter) => {
-    const r = new FileReader();
-    r.onload = () => setter(String(r.result || ''));
-    r.readAsText(file);
-  };
-
-  const doImport = async () => {
-    setBusy(true); setMsg(''); setResult(null);
-    try {
-      const res = await fetch(`${apiBase}/import/olivos`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders },
-        body: JSON.stringify({ csv: oCsv })
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        const missingCols = Array.isArray(data.missing) ? data.missing : [];
-        const missingMsg = missingCols.length ? ` Faltan columnas: ${missingCols.join(', ')}` : '';
-        const detailMsg = data.details ? ` (${data.details})` : '';
-        setResult(data);
-        setMsg(`${data.error || 'Error importando olivos'}${missingMsg}${detailMsg}`);
-        return;
-      }
-      setMsg(`OK: ${coalesce(data.inserted, 0)} olivos`);
-      setResult(data);
-      load();
-    } catch (e) {
-      setMsg(e.message || 'Error');
-    } finally {
-      setBusy(false);
-    }
-  };
   return (
     <div className="card grid">
       <div className="controls" style={{ justifyContent: 'space-between' }}>
         <div>
           <h1>Olivos</h1>
-          <span className="muted">Solo administradores</span>
+          <span className="muted">Datos almacenados en la base de datos tras sincronizar con Odoo</span>
+          <span className="muted" style={{ display: 'block', marginTop: '0.25rem' }}>
+            Última sincronización: {formatSyncDate(lastSync)}
+          </span>
         </div>
-        <div className="controls">
-          <button className="btn btn-outline" onClick={load}>Recargar</button>
-          <button className="btn btn-outline" disabled={busy} onClick={async () => {
-            if (!confirm('¿Limpiar tabla olivos? Esta acción no se puede deshacer.')) return;
-            setBusy(true); setMsg('');
-            try {
-              const res = await fetch(`${apiBase}/import/clear/olivos`, { method: 'POST', headers: { ...authHeaders } });
-              if (!res.ok) throw new Error('Error limpiando olivos');
-              setMsg('OK: olivos limpiados');
-              load();
-            } catch (e) { setMsg(e.message || 'Error'); } finally { setBusy(false); }
-          }}>Limpiar tabla</button>
-        </div>
+      <div className="controls">
+        <button className="btn btn-outline" onClick={load}>Recargar</button>
+        <button className="btn btn-outline" disabled={busy} onClick={async () => {
+          if (!confirm('¿Limpiar tabla olivos? Esta acción no se puede deshacer.')) return;
+          setBusy(true); setMsg('');
+          try {
+            const res = await fetch(`${apiBase}/import/clear/olivos`, { method: 'POST', headers: { ...authHeaders } });
+            if (!res.ok) throw new Error('Error limpiando olivos');
+            setMsg('OK: olivos limpiados');
+            load();
+          } catch (e) { setMsg(e.message || 'Error'); } finally { setBusy(false); }
+        }}>Limpiar tabla</button>
       </div>
-      <div className="row">
-        <label>Importar olivos (CSV con columnas id,id_parcela)</label>
-        <input type="file" accept=".csv,text/csv" onChange={(e) => e.target.files && e.target.files[0] && readFile(e.target.files[0], setOCsv)} />
-        <div className="controls">
-          <button className="btn" onClick={doImport} disabled={!oCsv || busy}>Importar</button>
-          {msg && <span className={`state ${msg.startsWith('OK') ? 'ok' : 'error'}`} style={{ marginLeft: '0.5rem' }}>{msg}</span>}
+    </div>
+      {msg && (
+        <div className="row">
+          <span className={`state ${msg.startsWith('OK') ? 'ok' : 'error'}`}>{msg}</span>
         </div>
-        {result && result.missing && result.missing.length > 0 && (
-          <div className="list" style={{ marginTop: '0.5rem' }}>
-            <div className="list-row">Faltan columnas: {result.missing.join(', ')}</div>
-          </div>
-        )}
-        {result && result.errorsCount > 0 && (
-          <div className="list" style={{ marginTop: '0.5rem' }}>
-            {(result.errors || []).map((e, i) => (
-              <div key={i} className="list-row">{e}</div>
-            ))}
-          </div>
-        )}
-      </div>
+      )}
       <div className="row">
         {status === 'loading' && <span className="muted">Cargando…</span>}
         {status === 'error' && <span className="state error">No autorizado o error</span>}
@@ -5906,7 +5909,9 @@ function OlivosView({ apiBase, authHeaders }) {
         <div className="list two-col">
           {rows.map(r => (
             <div key={r.id} className="list-row">
-              <div className="name">Olivo #{r.id}</div>
+              <div className="name">
+                Olivo {r.default_code ? `#${r.default_code}` : `ID ${r.id}`}
+              </div>
               <div>ID parcela: {r.id_parcela}</div>
             </div>
           ))}

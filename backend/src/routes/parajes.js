@@ -44,6 +44,20 @@ router.get('/parajes', requireAuth, requireAdmin, async (req, res) => {
   const countryCode = resolveRequestCountry(req);
   try {
     const rows = await db.public.many(
+      `SELECT ol.id,
+              ol.name AS nombre,
+              COUNT(par.id)::int AS parcelas_count
+         FROM odoo_landscapes ol
+         LEFT JOIN parcelas par ON par.paraje_id = ol.id AND par.country_code = ol.country_code
+        WHERE ol.country_code = $1
+        GROUP BY ol.id, ol.name
+        ORDER BY lower(ol.name)`,
+      [countryCode]
+    );
+    if (rows.length > 0) {
+      return res.json(rows);
+    }
+    const legacy = await db.public.many(
       `SELECT p.id,
               p.nombre,
               COUNT(pa.id)::int AS parcelas_count
@@ -51,127 +65,29 @@ router.get('/parajes', requireAuth, requireAdmin, async (req, res) => {
          LEFT JOIN parcelas pa ON pa.paraje_id = p.id AND pa.country_code = p.country_code
         WHERE p.country_code = $1
         GROUP BY p.id, p.nombre
-        ORDER BY lower(p.nombre)`
-      , [countryCode]
+        ORDER BY lower(p.nombre)`,
+      [countryCode]
     );
-    res.json(rows);
+    res.json(legacy);
   } catch (error) {
     res.status(500).json({ error: 'No se pudieron listar los parajes' });
   }
 });
 
 router.post('/parajes', requireAuth, requireAdmin, async (req, res) => {
-  const countryCode = resolveRequestCountry(req);
-  const nombre = normalizeName(req.body?.nombre);
-  if (!nombre) {
-    return res.status(400).json({ error: 'nombre requerido' });
-  }
-  try {
-    const row = await db.public.one(
-      'INSERT INTO parajes(nombre, country_code) VALUES($1, $2) RETURNING *',
-      [nombre, countryCode]
-    );
-    res.status(201).json(row);
-  } catch (error) {
-    if (error.message && error.message.includes('duplicate')) {
-      return res.status(409).json({ error: 'El paraje ya existe' });
-    }
-    res.status(500).json({ error: 'No se pudo crear el paraje' });
-  }
+  return res.status(400).json({ error: 'Los parajes se gestionan en Odoo. Sincroniza con /odoo/parajes/sync.' });
 });
 
 router.patch('/parajes/:id', requireAuth, requireAdmin, async (req, res) => {
-  const { id } = req.params;
-  const numericId = Number(id);
-  const countryCode = resolveRequestCountry(req);
-  if (!Number.isInteger(numericId) || numericId <= 0) {
-    return res.status(400).json({ error: 'id inválido' });
-  }
-  const updates = [];
-  const values = [];
-  if (req.body?.nombre !== undefined) {
-    const nombre = normalizeName(req.body.nombre);
-    if (!nombre) {
-      return res.status(400).json({ error: 'nombre requerido' });
-    }
-    updates.push(`nombre = $${values.length + 1}`);
-    values.push(nombre);
-  }
-  if (!updates.length) {
-    return res.status(400).json({ error: 'Sin cambios' });
-  }
-  try {
-    const idIdx = values.length + 1;
-    const countryIdx = values.length + 2;
-    const row = await db.public.one(
-      `UPDATE parajes SET ${updates.join(', ')} WHERE id = $${idIdx} AND country_code = $${countryIdx} RETURNING *`,
-      [...values, numericId, countryCode]
-    );
-    res.json(row);
-  } catch (error) {
-    if (error.message && error.message.includes('duplicate')) {
-      return res.status(409).json({ error: 'El paraje ya existe' });
-    }
-    res.status(500).json({ error: 'No se pudo actualizar el paraje' });
-  }
+  return res.status(400).json({ error: 'Los parajes se gestionan en Odoo. Sincroniza con /odoo/parajes/sync.' });
 });
 
 router.delete('/parajes/:id', requireAuth, requireAdmin, async (req, res) => {
-  const { id } = req.params;
-  const numericId = Number(id);
-  const countryCode = resolveRequestCountry(req);
-  if (!Number.isInteger(numericId) || numericId <= 0) {
-    return res.status(400).json({ error: 'id inválido' });
-  }
-  try {
-    await db.public.none(
-      'UPDATE parcelas SET paraje_id = NULL WHERE paraje_id = $1 AND country_code = $2',
-      [numericId, countryCode]
-    );
-    await db.public.one('DELETE FROM parajes WHERE id = $1 AND country_code = $2 RETURNING id', [numericId, countryCode]);
-    res.status(204).end();
-  } catch (error) {
-    res.status(500).json({ error: 'No se pudo eliminar el paraje' });
-  }
+  return res.status(400).json({ error: 'Los parajes se gestionan en Odoo. Sincroniza con /odoo/parajes/sync.' });
 });
 
 router.post('/parajes/auto-assign', requireAuth, requireAdmin, async (req, res) => {
-  const countryCode = resolveRequestCountry(req);
-  try {
-    const parcelas = await db.public.many(
-      'SELECT id, nombre, paraje_id FROM parcelas WHERE country_code = $1 ORDER BY id',
-      [countryCode]
-    );
-    const cache = new Map();
-    let assigned = 0;
-    const ensureCache = async (nombre) => findOrCreateParaje(nombre, { cache, countryCode });
-
-    for (const parcela of parcelas) {
-      if (parcela.paraje_id) continue;
-      const rawName = normalizeName(parcela.nombre);
-      if (!rawName.includes('-')) continue;
-      const [parajePart, ...restParts] = rawName.split('-');
-      const parajeName = normalizeName(parajePart);
-      if (!parajeName || restParts.length === 0) continue;
-      const paraje = await ensureCache(parajeName);
-      if (!paraje) continue;
-      await db.public.none(
-        'UPDATE parcelas SET paraje_id = $1 WHERE id = $2 AND country_code = $3',
-        [paraje.id, parcela.id, countryCode]
-      );
-      assigned += 1;
-    }
-
-    const totalParajesRow = await db.public.one(
-      'SELECT COUNT(*)::int AS total FROM parajes WHERE country_code = $1',
-      [countryCode]
-    );
-    const totalParajes = Number(totalParajesRow.total) || cache.size;
-    res.json({ assigned, parajesRegistrados: totalParajes });
-  } catch (error) {
-    console.error('Auto assign parajes error', error);
-    res.status(500).json({ error: 'No se pudieron asignar los parajes automáticamente' });
-  }
+  return res.status(400).json({ error: 'Los parajes se gestionan en Odoo. Sincroniza con /odoo/parajes/sync.' });
 });
 
 module.exports = router;

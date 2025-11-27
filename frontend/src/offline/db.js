@@ -1,7 +1,7 @@
 import { openDB } from 'idb';
 
 const DB_NAME = 'olive-tracking-offline';
-const DB_VERSION = 5;
+const DB_VERSION = 6;
 
 let dbPromise;
 
@@ -15,7 +15,7 @@ function randomId() {
 function getDb() {
   if (!dbPromise) {
     dbPromise = openDB(DB_NAME, DB_VERSION, {
-      upgrade(db) {
+      upgrade(db, oldVersion, _newVersion, transaction) {
         if (!db.objectStoreNames.contains('meta')) {
           db.createObjectStore('meta');
         }
@@ -23,7 +23,17 @@ function getDb() {
           db.createObjectStore('parcelas', { keyPath: 'id' });
         }
         if (!db.objectStoreNames.contains('olivos')) {
-          db.createObjectStore('olivos', { keyPath: 'id' });
+          const store = db.createObjectStore('olivos', { keyPath: 'id' });
+          store.createIndex('byDefaultCode', 'default_code');
+        } else if (oldVersion < 6) {
+          try {
+            const store = transaction.objectStore('olivos');
+            if (!store.indexNames.contains('byDefaultCode')) {
+              store.createIndex('byDefaultCode', 'default_code');
+            }
+          } catch (_) {
+            // ignore index upgrade errors
+          }
         }
         if (!db.objectStoreNames.contains('palots')) {
           const store = db.createObjectStore('palots', { keyPath: 'key' });
@@ -201,6 +211,21 @@ function extractTagIds(tags) {
     }
   }
   return ids;
+}
+
+function normalizeOlivoRecord(record) {
+  if (!record) return null;
+  const id = normalizeNumber(record.id);
+  if (!Number.isInteger(id)) return null;
+  const parcelaId = normalizeNumber(record.id_parcela != null ? record.id_parcela : record.parcel_id);
+  return {
+    ...record,
+    id,
+    id_parcela: parcelaId,
+    parcel_id: parcelaId,
+    default_code: normalizeString(record.default_code || record.codigo || ''),
+    name: normalizeString(record.name || record.nombre || ''),
+  };
 }
 
 function makePalotRecord(palot) {
@@ -690,18 +715,135 @@ export async function getParcelaById(id) {
   return db.transaction('parcelas').store.get(Number(id));
 }
 
-export async function getParcelaByOlivo(olivoId) {
-  if (!olivoId && olivoId !== 0) return null;
+export async function getParcelaByOlivo(identifier) {
+  if (identifier === undefined || identifier === null || identifier === '') return null;
   const db = await getDb();
   const tx = db.transaction(['olivos', 'parcelas']);
   const olivoStore = tx.objectStore('olivos');
   const parcelaStore = tx.objectStore('parcelas');
-  const parsedId = Number(olivoId);
-  if (!Number.isFinite(parsedId)) return null;
-  const olivo = await olivoStore.get(parsedId);
-  if (!olivo) return null;
+  const trimmed = typeof identifier === 'string' ? identifier.trim() : '';
+  const variants = [];
+  if (trimmed) {
+    variants.push(trimmed);
+    const noZeros = trimmed.replace(/^0+/, '');
+    if (noZeros && noZeros !== trimmed) variants.push(noZeros);
+  }
+  const parsedId = Number(identifier);
+  if (Number.isInteger(parsedId)) {
+    const padded = String(parsedId).padStart(Math.max(trimmed.length || 0, 5), '0');
+    if (padded && !variants.includes(padded)) variants.push(padded);
+  }
+  for (const candidate of variants) {
+    try {
+      const idx = olivoStore.index('byDefaultCode');
+      const record = await idx.get(candidate);
+      if (record) {
+        const parcela = await parcelaStore.get(record.id_parcela);
+        if (parcela) return parcela;
+      }
+    } catch (_) {}
+  }
+  if (Number.isInteger(parsedId)) {
+    const fallback = await olivoStore.get(parsedId);
+    if (fallback && fallback.id_parcela) {
+      const parcela = await parcelaStore.get(fallback.id_parcela);
+      if (parcela) return parcela;
+    }
+  }
+  return null;
+}
+
+export async function findOlivoByCodigo(codigo) {
+  const trimmed = typeof codigo === 'string' ? codigo.trim() : String(codigo ?? '').trim();
+  if (!trimmed) return null;
+  const db = await getDb();
+  const tx = db.transaction('olivos');
+  const variants = [trimmed];
+  const noZeros = trimmed.replace(/^0+/, '');
+  if (noZeros && noZeros !== trimmed) variants.push(noZeros);
+  const parsedNum = Number(noZeros || trimmed);
+  if (Number.isInteger(parsedNum)) {
+    const padded = String(parsedNum).padStart(Math.max(trimmed.length, 5), '0');
+    if (!variants.includes(padded)) variants.push(padded);
+  }
+  for (const candidate of variants) {
+    try {
+      const idx = tx.store.index('byDefaultCode');
+      const record = await idx.get(candidate);
+      const normalized = normalizeOlivoRecord(record);
+      if (normalized) return normalized;
+    } catch (_) {}
+  }
+  if (Number.isInteger(parsedNum)) {
+    const byId = await tx.store.get(parsedNum);
+    const normalizedById = normalizeOlivoRecord(byId);
+    if (normalizedById) return normalizedById;
+  }
+  const all = await tx.store.getAll();
+  const match = (all || []).find((item) => normalizeString(item?.default_code) === trimmed);
+  return normalizeOlivoRecord(match);
+}
+      try {
+        const idx = olivoStore.index('byDefaultCode');
+        olivo = await idx.get(candidate);
+        if (olivo) break;
+      } catch (_) {
+        olivo = null;
+      }
+    }
+  }
+  if (!olivo) {
+    const parsedId = Number(identifier);
+    if (Number.isInteger(parsedId)) {
+      olivo = await olivoStore.get(parsedId);
+    }
+  }
+  if (!olivo || !olivo.id_parcela) return null;
   const parcela = await parcelaStore.get(olivo.id_parcela);
   return parcela || null;
+}
+
+export async function listOlivos() {
+  const db = await getDb();
+  const rows = await db.transaction('olivos').store.getAll();
+  return rows.map((row) => normalizeOlivoRecord(row)).filter(Boolean);
+}
+
+export async function findOlivoByCodigo(codigo) {
+  const trimmed = typeof codigo === 'string' ? codigo.trim() : String(codigo ?? '').trim();
+  if (!trimmed) return null;
+  const db = await getDb();
+  const tx = db.transaction('olivos');
+  const candidates = [trimmed];
+  const noZeros = trimmed.replace(/^0+/, '');
+  if (noZeros && noZeros !== trimmed) candidates.push(noZeros);
+  for (const candidate of candidates) {
+    try {
+      const idx = tx.store.index('byDefaultCode');
+      const record = await idx.get(candidate);
+      const normalized = normalizeOlivoRecord(record);
+      if (normalized) return normalized;
+    } catch (_) {
+      // ignore index lookup failures
+    }
+  }
+  const parsedId = Number(trimmed);
+  if (Number.isInteger(parsedId)) {
+    const byId = await tx.store.get(parsedId);
+    const normalizedById = normalizeOlivoRecord(byId);
+    if (normalizedById) return normalizedById;
+  }
+  const all = await tx.store.getAll();
+  const match = (all || []).find((item) => normalizeString(item?.default_code) === trimmed);
+  return normalizeOlivoRecord(match);
+}
+
+export async function findOlivoById(id) {
+  const parsed = Number(id);
+  if (!Number.isInteger(parsed)) return null;
+  const db = await getDb();
+  const record = await db.transaction('olivos').store.get(parsed);
+  return normalizeOlivoRecord(record);
 }
 
 export async function listParcelas() {

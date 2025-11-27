@@ -190,14 +190,15 @@ router.get('/metrics/harvest', requireAuth, requireAdminOrMetrics, async (req, r
     const perParcelaSql = `
       SELECT
         par.id,
-        par.nombre,
+        COALESCE(op.name, par.nombre) AS nombre,
         COALESCE(par.num_olivos, 0) AS num_olivos,
         COALESCE(SUM(${adjustedPerParcelaKgsExpr}), 0) AS total_kgs
       FROM parcelas par
+      LEFT JOIN odoo_parcelas op ON op.id = par.id AND op.country_code = par.country_code
       LEFT JOIN parcelas_palots pp ON pp.id_parcela = par.id AND pp.country_code = par.country_code
       ${perParcelaFilter.where}
-      GROUP BY par.id, par.nombre, par.num_olivos
-      ORDER BY par.nombre`;
+      GROUP BY par.id, COALESCE(op.name, par.nombre), par.num_olivos
+      ORDER BY COALESCE(op.name, par.nombre)`;
 
     const parcelaRows = await db.public.many(perParcelaSql, perParcelaFilter.params);
 
@@ -218,7 +219,11 @@ router.get('/metrics/harvest', requireAuth, requireAdminOrMetrics, async (req, r
       .filter(Boolean);
 
     const parcelOptionsRaw = await db.public.many(
-      'SELECT id, nombre FROM parcelas WHERE country_code = $1 ORDER BY nombre',
+      `SELECT par.id, COALESCE(op.name, par.nombre) AS nombre
+         FROM parcelas par
+         LEFT JOIN odoo_parcelas op ON op.id = par.id AND op.country_code = par.country_code
+        WHERE par.country_code = $1
+        ORDER BY COALESCE(op.name, par.nombre)`,
       [countryCode]
     );
     const parcelOptions = parcelOptionsRaw
@@ -235,7 +240,7 @@ router.get('/metrics/harvest', requireAuth, requireAdminOrMetrics, async (req, r
       });
 
     const parajeOptionsRaw = await db.public.many(
-      'SELECT id, nombre FROM parajes WHERE country_code = $1 ORDER BY nombre',
+      `SELECT id, name AS nombre FROM odoo_landscapes WHERE country_code = $1 ORDER BY name`,
       [countryCode]
     );
     const parajeOptions = parajeOptionsRaw

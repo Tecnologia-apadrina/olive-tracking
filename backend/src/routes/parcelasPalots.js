@@ -73,8 +73,8 @@ const fetchRelationWithDetails = async (relationId, countryCode) => {
             par.num_olivos AS parcela_num_olivos,
             par.hectareas  AS parcela_hectareas,
             COALESCE(op.common_name, par.nombre_interno) AS parcela_nombre_interno,
-            par.paraje_id AS parcela_paraje_id,
-            pj.nombre AS parcela_paraje_nombre,
+            COALESCE(op.landscape_id, par.paraje_id) AS parcela_paraje_id,
+            COALESCE(ols.name, pj.nombre) AS parcela_paraje_nombre,
             p.id     AS palot_id,
             p.codigo AS palot_codigo,
             p.procesado AS palot_procesado,
@@ -93,6 +93,7 @@ const fetchRelationWithDetails = async (relationId, countryCode) => {
        FROM parcelas_palots pp
        JOIN parcelas par ON par.id = pp.id_parcela AND par.country_code = pp.country_code
        LEFT JOIN odoo_parcelas op ON op.id = par.id AND op.country_code = par.country_code
+       LEFT JOIN odoo_landscapes ols ON ols.id = COALESCE(op.landscape_id, par.paraje_id) AND ols.country_code = par.country_code
        LEFT JOIN parajes pj ON pj.id = par.paraje_id AND pj.country_code = par.country_code
        JOIN palots   p   ON p.id = pp.id_palot AND p.country_code = pp.country_code
        LEFT JOIN users  u ON u.id = pp.id_usuario
@@ -117,7 +118,7 @@ const ensureParcelaExists = async (parcelaId, countryCode, fallback = {}) => {
   let odooRow = null;
   try {
     const rows = await db.public.many(
-      'SELECT id, name, common_name, contract_percentage FROM odoo_parcelas WHERE id = $1 AND country_code = $2 LIMIT 1',
+      'SELECT id, name, common_name, contract_percentage, landscape_id FROM odoo_parcelas WHERE id = $1 AND country_code = $2 LIMIT 1',
       [parcelaId, countryCode]
     );
     odooRow = Array.isArray(rows) && rows[0] ? rows[0] : null;
@@ -130,13 +131,35 @@ const ensureParcelaExists = async (parcelaId, countryCode, fallback = {}) => {
   const porcentaje = odooRow && odooRow.contract_percentage != null
     ? Number(odooRow.contract_percentage)
     : (fallback.porcentaje != null ? fallback.porcentaje : null);
+  const landscapeId = odooRow && odooRow.landscape_id != null ? Number(odooRow.landscape_id) : null;
+  if (Number.isInteger(landscapeId) && landscapeId > 0) {
+    try {
+      const landscapeRow = await db.public.one(
+        'SELECT name FROM odoo_landscapes WHERE id = $1 AND country_code = $2',
+        [landscapeId, countryCode]
+      );
+      await db.public.none(
+        `INSERT INTO parajes(id, nombre, country_code)
+         VALUES($1, $2, $3)
+         ON CONFLICT (id) DO UPDATE SET nombre = EXCLUDED.nombre, country_code = EXCLUDED.country_code`,
+        [landscapeId, landscapeRow?.name || '', countryCode]
+      );
+    } catch (_) {
+      // ignorar errores al persistir el paraje
+    }
+  }
 
   try {
     await db.public.none(
-      `INSERT INTO parcelas(id, nombre, nombre_interno, porcentaje, country_code)
-       VALUES($1, $2, $3, $4, $5)
-       ON CONFLICT (id) DO NOTHING`,
-      [parcelaId, nombre, nombreInterno, porcentaje, countryCode]
+      `INSERT INTO parcelas(id, nombre, nombre_interno, porcentaje, paraje_id, country_code)
+       VALUES($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (id) DO UPDATE SET
+         nombre = COALESCE(EXCLUDED.nombre, parcelas.nombre),
+         nombre_interno = COALESCE(EXCLUDED.nombre_interno, parcelas.nombre_interno),
+         porcentaje = COALESCE(EXCLUDED.porcentaje, parcelas.porcentaje),
+         paraje_id = COALESCE(EXCLUDED.paraje_id, parcelas.paraje_id),
+         country_code = EXCLUDED.country_code`,
+      [parcelaId, nombre, nombreInterno, porcentaje, landscapeId ?? null, countryCode]
     );
   } catch (_) {
     // Ignorar errores de inserción; volveremos a comprobar
@@ -313,8 +336,8 @@ router.get('/parcelas-palots', async (req, res) => {
               par.num_olivos AS parcela_num_olivos,
               par.hectareas AS parcela_hectareas,
               COALESCE(op.common_name, par.nombre_interno) AS parcela_nombre_interno,
-              par.paraje_id AS parcela_paraje_id,
-              pj.nombre AS parcela_paraje_nombre,
+              COALESCE(op.landscape_id, par.paraje_id) AS parcela_paraje_id,
+              COALESCE(ols.name, pj.nombre) AS parcela_paraje_nombre,
               p.id     AS palot_id,
               p.codigo AS palot_codigo,
               p.procesado AS palot_procesado,
@@ -333,6 +356,7 @@ router.get('/parcelas-palots', async (req, res) => {
          FROM parcelas_palots pp
          JOIN parcelas par ON par.id = pp.id_parcela AND par.country_code = pp.country_code
          LEFT JOIN odoo_parcelas op ON op.id = par.id AND op.country_code = par.country_code
+         LEFT JOIN odoo_landscapes ols ON ols.id = COALESCE(op.landscape_id, par.paraje_id) AND ols.country_code = par.country_code
          LEFT JOIN parajes pj ON pj.id = par.paraje_id AND pj.country_code = par.country_code
          JOIN palots   p   ON p.id = pp.id_palot AND p.country_code = pp.country_code
          LEFT JOIN users  u ON u.id = pp.id_usuario

@@ -31,17 +31,30 @@ router.get('/sync/snapshot', async (req, res) => {
             COALESCE(op.contract_percentage, par.porcentaje) AS porcentaje,
             par.num_olivos,
             par.hectareas,
-            par.paraje_id,
-            pj.nombre AS paraje_nombre,
+            COALESCE(op.landscape_id, par.paraje_id) AS paraje_id,
+            COALESCE(ol.name, pj.nombre) AS paraje_nombre,
             par.country_code
          FROM parcelas par
          LEFT JOIN odoo_parcelas op ON op.id = par.id AND op.country_code = par.country_code
+         LEFT JOIN odoo_landscapes ol ON ol.id = COALESCE(op.landscape_id, par.paraje_id) AND ol.country_code = par.country_code
          LEFT JOIN parajes pj ON pj.id = par.paraje_id AND pj.country_code = par.country_code
         WHERE par.country_code = $1
         ORDER BY par.id`,
         [countryCode]
       ),
-      db.public.many('SELECT * FROM olivos WHERE country_code = $1 ORDER BY id', [countryCode]),
+      db.public.many(
+        `SELECT
+            oo.id,
+            COALESCE(oo.parcel_id, o.id_parcela) AS id_parcela,
+            oo.default_code,
+            oo.name,
+            oo.country_code
+         FROM odoo_olivos oo
+         LEFT JOIN olivos o ON o.id = oo.id
+        WHERE oo.country_code = $1
+        ORDER BY oo.id`,
+        [countryCode]
+      ),
       db.public.many('SELECT * FROM palots WHERE country_code = $1 ORDER BY id', [countryCode]),
       db.public.many(`SELECT pp.id,
                              par.id   AS parcela_id,
@@ -55,8 +68,8 @@ router.get('/sync/snapshot', async (req, res) => {
                              par.num_olivos AS parcela_num_olivos,
                              par.hectareas  AS parcela_hectareas,
                              COALESCE(op.common_name, par.nombre_interno) AS parcela_nombre_interno,
-                             par.paraje_id AS parcela_paraje_id,
-                             pj.nombre AS parcela_paraje_nombre,
+                             COALESCE(op.landscape_id, par.paraje_id) AS parcela_paraje_id,
+                             COALESCE(ol.name, pj.nombre) AS parcela_paraje_nombre,
                              p.id     AS palot_id,
                              p.codigo AS palot_codigo,
                              p.procesado AS palot_procesado,
@@ -75,6 +88,7 @@ router.get('/sync/snapshot', async (req, res) => {
                         FROM parcelas_palots pp
                         JOIN parcelas par ON par.id = pp.id_parcela AND par.country_code = pp.country_code
                         LEFT JOIN odoo_parcelas op ON op.id = par.id AND op.country_code = par.country_code
+                        LEFT JOIN odoo_landscapes ol ON ol.id = COALESCE(op.landscape_id, par.paraje_id) AND ol.country_code = par.country_code
                         LEFT JOIN parajes pj ON pj.id = par.paraje_id AND pj.country_code = par.country_code
                         JOIN palots   p   ON p.id = pp.id_palot AND p.country_code = pp.country_code
                         LEFT JOIN users  u ON u.id = pp.id_usuario
@@ -89,7 +103,13 @@ router.get('/sync/snapshot', async (req, res) => {
           ORDER BY pe.id_parcela, pe.id_etiqueta`,
         [countryCode]
       ),
-      db.public.many('SELECT id, nombre FROM parajes WHERE country_code = $1 ORDER BY nombre ASC', [countryCode]),
+      db.public.many(
+        `SELECT id, name AS nombre
+           FROM odoo_landscapes
+          WHERE country_code = $1
+          ORDER BY name ASC`,
+        [countryCode]
+      ),
       db.public.many('SELECT id, nombre, icono FROM activity_types WHERE country_code = $1 ORDER BY nombre ASC', [countryCode]),
       db.public.many(
         `SELECT pa.id,
@@ -100,8 +120,8 @@ router.get('/sync/snapshot', async (req, res) => {
                 par.sigpac_poligono,
                 par.sigpac_parcela,
                 par.sigpac_recinto,
-                par.paraje_id AS parcela_paraje_id,
-                pj.nombre AS parcela_paraje_nombre,
+                COALESCE(op.landscape_id, par.paraje_id) AS parcela_paraje_id,
+                COALESCE(ol.name, pj.nombre) AS parcela_paraje_nombre,
                 pa.olivo_id,
                 pa.activity_type_id,
                 at.nombre AS activity_type_nombre,
@@ -114,6 +134,7 @@ router.get('/sync/snapshot', async (req, res) => {
            FROM parcela_activities pa
            JOIN parcelas par ON par.id = pa.parcela_id AND par.country_code = pa.country_code
            LEFT JOIN odoo_parcelas op ON op.id = par.id AND op.country_code = par.country_code
+           LEFT JOIN odoo_landscapes ol ON ol.id = COALESCE(op.landscape_id, par.paraje_id) AND ol.country_code = par.country_code
            LEFT JOIN parajes pj ON pj.id = par.paraje_id AND pj.country_code = par.country_code
            JOIN activity_types at ON at.id = pa.activity_type_id AND at.country_code = pa.country_code
            LEFT JOIN users u ON u.id = pa.created_by
