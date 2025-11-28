@@ -783,59 +783,11 @@ export async function findOlivoByCodigo(codigo) {
   const match = (all || []).find((item) => normalizeString(item?.default_code) === trimmed);
   return normalizeOlivoRecord(match);
 }
-      try {
-        const idx = olivoStore.index('byDefaultCode');
-        olivo = await idx.get(candidate);
-        if (olivo) break;
-      } catch (_) {
-        olivo = null;
-      }
-    }
-  }
-  if (!olivo) {
-    const parsedId = Number(identifier);
-    if (Number.isInteger(parsedId)) {
-      olivo = await olivoStore.get(parsedId);
-    }
-  }
-  if (!olivo || !olivo.id_parcela) return null;
-  const parcela = await parcelaStore.get(olivo.id_parcela);
-  return parcela || null;
-}
 
 export async function listOlivos() {
   const db = await getDb();
   const rows = await db.transaction('olivos').store.getAll();
   return rows.map((row) => normalizeOlivoRecord(row)).filter(Boolean);
-}
-
-export async function findOlivoByCodigo(codigo) {
-  const trimmed = typeof codigo === 'string' ? codigo.trim() : String(codigo ?? '').trim();
-  if (!trimmed) return null;
-  const db = await getDb();
-  const tx = db.transaction('olivos');
-  const candidates = [trimmed];
-  const noZeros = trimmed.replace(/^0+/, '');
-  if (noZeros && noZeros !== trimmed) candidates.push(noZeros);
-  for (const candidate of candidates) {
-    try {
-      const idx = tx.store.index('byDefaultCode');
-      const record = await idx.get(candidate);
-      const normalized = normalizeOlivoRecord(record);
-      if (normalized) return normalized;
-    } catch (_) {
-      // ignore index lookup failures
-    }
-  }
-  const parsedId = Number(trimmed);
-  if (Number.isInteger(parsedId)) {
-    const byId = await tx.store.get(parsedId);
-    const normalizedById = normalizeOlivoRecord(byId);
-    if (normalizedById) return normalizedById;
-  }
-  const all = await tx.store.getAll();
-  const match = (all || []).find((item) => normalizeString(item?.default_code) === trimmed);
-  return normalizeOlivoRecord(match);
 }
 
 export async function findOlivoById(id) {

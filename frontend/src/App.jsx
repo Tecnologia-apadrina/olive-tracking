@@ -562,7 +562,7 @@ function App() {
     };
   }, [olivo, isOnline, authToken, odooLookupStatus, parcelaId]);
 
-  // Debounced lookup for olivo -> parcela using datos cacheados de Odoo
+  // Debounced lookup for olivo -> parcela usando Odoo (API) con fallback offline
   useEffect(() => {
     if (odooDebounceRef.current) {
       clearTimeout(odooDebounceRef.current);
@@ -578,34 +578,90 @@ function App() {
       return;
     }
 
+    const trimmedInput = odooOlivo.trim();
     setOdooLookupStatus('waiting');
     odooDebounceRef.current = setTimeout(async () => {
       setOdooLookupStatus('loading');
       try {
-        const olivoRecord = await findOlivoByCodigo(odooOlivo);
-        if (!olivoRecord) {
+        let parcelaIdFromLookup = null;
+        let parcelaData = null;
+
+        if (isOnline) {
+          try {
+            const res = await fetch(`${apiBase}/olivos/${encodeURIComponent(trimmedInput)}/parcela`, { headers: { ...authHeaders } });
+            if (res.status === 401) {
+              throw new Error('No autenticado');
+            }
+            if (res.ok) {
+              parcelaData = await res.json();
+              const parsed = Number(parcelaData?.id);
+              parcelaIdFromLookup = Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+            } else if (res.status !== 404) {
+              throw new Error('network');
+            }
+          } catch (err) {
+            if (err.message === 'No autenticado') {
+              throw err;
+            }
+            if (err.message === 'network') {
+              throw err;
+            }
+          }
+        }
+
+        if (!parcelaIdFromLookup || !parcelaData) {
+          if (offlineReady) {
+            const olivoRecord = await findOlivoByCodigo(trimmedInput);
+            if (olivoRecord && Number.isInteger(Number(olivoRecord.id_parcela))) {
+              parcelaIdFromLookup = Number(olivoRecord.id_parcela);
+            }
+            if (!parcelaData && Number.isInteger(parcelaIdFromLookup) && parcelaIdFromLookup > 0) {
+              try {
+                parcelaData = await getParcelaById(parcelaIdFromLookup);
+              } catch (_) {
+                parcelaData = null;
+              }
+            }
+          }
+        }
+
+        if (!Number.isInteger(parcelaIdFromLookup) || parcelaIdFromLookup <= 0) {
           throw new Error('not-found');
         }
-        const parcelaIdOdoo = Number(olivoRecord.id_parcela);
-        if (Number.isInteger(parcelaIdOdoo) && parcelaIdOdoo > 0) {
-          setParcelaId(parcelaIdOdoo);
-        }
-        const parcelaData = Number.isInteger(parcelaIdOdoo)
-          ? await getParcelaById(parcelaIdOdoo)
-          : null;
-        const parcelaNombreOdoo = parcelaData?.nombre || parcelaData?.nombre_interno || '';
-        const parcelaPctOdoo = parcelaData && parcelaData.porcentaje != null
+
+        const resolvedNombre = parcelaData?.nombre || parcelaData?.nombre_interno || '';
+        const resolvedPct = parcelaData && parcelaData.porcentaje != null
           ? Number(parcelaData.porcentaje)
           : null;
-        setParcelaNombre(parcelaNombreOdoo);
-        setParcelaPct(parcelaPctOdoo);
+
+        setParcelaId(parcelaIdFromLookup);
+        setParcelaNombre(resolvedNombre);
+        setParcelaPct(resolvedPct);
         preferOdooParcelaRef.current = true;
 
         // Estado específico de la búsqueda Odoo (para mostrar mensajes)
-        setOdooParcelaNombre(parcelaNombreOdoo);
-        setOdooParcelaPct(parcelaPctOdoo);
+        setOdooParcelaNombre(resolvedNombre);
+        setOdooParcelaPct(resolvedPct);
+        if (parcelaIdFromLookup != null) {
+          let initialTagIds = toTagIds((parcelaData && (parcelaData.etiquetas || parcelaData.etiqueta_ids)) || []);
+          if (initialTagIds.length === 0) {
+            try {
+              const stored = await getParcelaById(parcelaIdFromLookup);
+              if (stored) {
+                initialTagIds = toTagIds(stored.etiquetas || stored.etiqueta_ids);
+              }
+            } catch (_) {}
+          }
+          setParcelaTagDrafts((prev) => ({
+            ...prev,
+            [parcelaIdFromLookup]: initialTagIds,
+          }));
+        }
+        setPalotKgs('');
+        setParcelaNotas('');
         setStatus('success');
         setOdooLookupStatus('success');
+        loadRelPalots(parcelaIdFromLookup);
       } catch (err) {
         // No tocamos parcelaId/parcelaNombre globales para no borrar
         // una selección que venga de la tabla local.
@@ -619,7 +675,7 @@ function App() {
     return () => {
       if (odooDebounceRef.current) clearTimeout(odooDebounceRef.current);
     };
-  }, [odooOlivo, offlineReady]);
+  }, [odooOlivo, offlineReady, isOnline, apiBase, authHeaders]);
 
   const beginRelationsRefresh = () => {
     relationsRefreshCounter.current += 1;
