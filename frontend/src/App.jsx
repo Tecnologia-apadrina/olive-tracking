@@ -10,7 +10,6 @@ import {
   getPalotByCodigo,
   enqueueEnsurePalot,
   enqueueRelation,
-  getParcelaByOlivo as offlineGetParcelaByOlivo,
   getParcelaById,
   findOlivoByCodigo,
   getPendingOps,
@@ -122,15 +121,11 @@ function App() {
   const [parcelaNotas, setParcelaNotas] = useState('');
   const [palotAddError, setPalotAddError] = useState('');
   const [showOwnPalotsOnly, setShowOwnPalotsOnly] = useState(false);
-  const [olivo, setOlivo] = useState('');
   const [parcelaNombre, setParcelaNombre] = useState('');
   const [parcelaId, setParcelaId] = useState(null);
   const [parcelaPct, setParcelaPct] = useState(null);
   const [status, setStatus] = useState('idle'); // idle | waiting | loading | success | error
   const [odooOlivo, setOdooOlivo] = useState('');
-  const [odooParcelaNombre, setOdooParcelaNombre] = useState('');
-  const [odooParcelaPct, setOdooParcelaPct] = useState(null);
-  const [odooLookupStatus, setOdooLookupStatus] = useState('idle'); // idle | waiting | loading | success | error
   const [saveStatus, setSaveStatus] = useState('idle'); // idle | saving | ok | fail
   const [message, setMessage] = useState('');
   const [allRels, setAllRels] = useState([]);
@@ -147,9 +142,7 @@ function App() {
   const [noteSaveStatus, setNoteSaveStatus] = useState({}); // { [relationKey]: 'idle'|'saving'|'ok'|'error' }
   const [aderezoSaveStatus, setAderezoSaveStatus] = useState({}); // { [palotKey]: 'idle'|'saving'|'ok'|'error' }
   const [collapsedPalots, setCollapsedPalots] = useState({}); // { [palotId]: boolean }
-  const debounceRef = useRef(null);
   const odooDebounceRef = useRef(null);
-  const preferOdooParcelaRef = useRef(false);
   const [appVersion, setAppVersion] = useState('');
   const [dbUrl, setDbUrl] = useState('');
   const [loginError, setLoginError] = useState('');
@@ -473,59 +466,42 @@ function App() {
     setAdminMenuOpen(false);
   };
 
-  // Debounced lookup for olivo -> parcela
+  // Debounced lookup usando referencias sincronizadas desde Odoo
   useEffect(() => {
-    if (preferOdooParcelaRef.current && odooLookupStatus === 'success' && parcelaId) {
-      // Si ya tenemos parcela de Odoo, no pisar con el flujo local.
-      return;
-    }
-    if (debounceRef.current) {
-      clearTimeout(debounceRef.current);
+    if (odooDebounceRef.current) {
+      clearTimeout(odooDebounceRef.current);
     }
 
-    if (!olivo || olivo.trim() === '') {
+    const trimmed = typeof odooOlivo === 'string' ? odooOlivo.trim() : '';
+    if (!trimmed) {
       setStatus('idle');
       setParcelaNombre('');
       setParcelaId(null);
       setParcelaPct(null);
       setPalotKgs('');
       setParcelaNotas('');
+      loadRelPalots(null);
       return;
     }
 
     setStatus('waiting');
-    debounceRef.current = setTimeout(async () => {
+    odooDebounceRef.current = setTimeout(async () => {
       setStatus('loading');
       try {
-        let parcelaData = null;
-        if (isOnline) {
-          try {
-            const res = await fetch(`${apiBase}/olivos/${encodeURIComponent(olivo)}/parcela`, { headers: { ...authHeaders } });
-            if (res.ok) {
-              parcelaData = await res.json();
-            } else if (res.status === 404) {
-              parcelaData = null;
-            } else if (res.status === 401) {
-              throw new Error('No autenticado');
-            } else {
-              throw new Error('network');
-            }
-          } catch (err) {
-            if (typeof navigator !== 'undefined' && !navigator.onLine) {
-              parcelaData = null;
-            } else if (err.message === 'No autenticado') {
-              throw err;
-            }
-          }
+        const olivoRecord = await findOlivoByCodigo(trimmed);
+        if (!olivoRecord) {
+          throw new Error('not-found');
         }
-        if (!parcelaData) {
-          parcelaData = await offlineGetParcelaByOlivo(olivo);
+        const parcelaIdOdoo = Number(olivoRecord.id_parcela);
+        if (!Number.isInteger(parcelaIdOdoo) || parcelaIdOdoo <= 0) {
+          throw new Error('not-found');
         }
+        setParcelaId(parcelaIdOdoo);
+        const parcelaData = await getParcelaById(parcelaIdOdoo);
         if (!parcelaData) {
-          throw new Error('No encontrado');
+          throw new Error('no-parcela');
         }
         setParcelaNombre(parcelaData.nombre || parcelaData.nombre_interno || '');
-        setParcelaId(parcelaData && parcelaData.id !== undefined ? parcelaData.id : null);
         setParcelaPct(parcelaData && parcelaData.porcentaje !== undefined ? parcelaData.porcentaje : null);
         if (parcelaData && parcelaData.id != null) {
           let initialTagIds = toTagIds(parcelaData.etiquetas || parcelaData.etiqueta_ids);
@@ -545,7 +521,7 @@ function App() {
         setPalotKgs('');
         setParcelaNotas('');
         setStatus('success');
-        loadRelPalots(parcelaData && parcelaData.id !== undefined ? parcelaData.id : null);
+        loadRelPalots(parcelaData && parcelaData.id != null ? parcelaData.id : null);
       } catch (err) {
         setParcelaNombre('');
         setParcelaId(null);
@@ -554,65 +530,6 @@ function App() {
         setParcelaNotas('');
         setStatus('error');
         loadRelPalots(null);
-      }
-    }, 800);
-
-    return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-    };
-  }, [olivo, isOnline, authToken, odooLookupStatus, parcelaId]);
-
-  // Debounced lookup for olivo -> parcela using datos cacheados de Odoo
-  useEffect(() => {
-    if (odooDebounceRef.current) {
-      clearTimeout(odooDebounceRef.current);
-    }
-
-    if (!odooOlivo || odooOlivo.trim() === '') {
-      setOdooLookupStatus('idle');
-      setOdooParcelaNombre('');
-      setOdooParcelaPct(null);
-      // No limpiamos parcelaId/parcelaNombre globales aquí para no romper
-      // una selección previa basada en la BBDD local.
-      preferOdooParcelaRef.current = false;
-      return;
-    }
-
-    setOdooLookupStatus('waiting');
-    odooDebounceRef.current = setTimeout(async () => {
-      setOdooLookupStatus('loading');
-      try {
-        const olivoRecord = await findOlivoByCodigo(odooOlivo);
-        if (!olivoRecord) {
-          throw new Error('not-found');
-        }
-        const parcelaIdOdoo = Number(olivoRecord.id_parcela);
-        if (Number.isInteger(parcelaIdOdoo) && parcelaIdOdoo > 0) {
-          setParcelaId(parcelaIdOdoo);
-        }
-        const parcelaData = Number.isInteger(parcelaIdOdoo)
-          ? await getParcelaById(parcelaIdOdoo)
-          : null;
-        const parcelaNombreOdoo = parcelaData?.nombre || parcelaData?.nombre_interno || '';
-        const parcelaPctOdoo = parcelaData && parcelaData.porcentaje != null
-          ? Number(parcelaData.porcentaje)
-          : null;
-        setParcelaNombre(parcelaNombreOdoo);
-        setParcelaPct(parcelaPctOdoo);
-        preferOdooParcelaRef.current = true;
-
-        // Estado específico de la búsqueda Odoo (para mostrar mensajes)
-        setOdooParcelaNombre(parcelaNombreOdoo);
-        setOdooParcelaPct(parcelaPctOdoo);
-        setStatus('success');
-        setOdooLookupStatus('success');
-      } catch (err) {
-        // No tocamos parcelaId/parcelaNombre globales para no borrar
-        // una selección que venga de la tabla local.
-        setOdooParcelaNombre('');
-        setOdooParcelaPct(null);
-        setOdooLookupStatus('error');
-        preferOdooParcelaRef.current = false;
       }
     }, 400);
 
@@ -930,12 +847,7 @@ function App() {
         setPalotList([]);
         setPalotInput('');
         setPalotAddError('');
-        setOlivo('');
         setOdooOlivo('');
-        setOdooParcelaNombre('');
-        setOdooParcelaPct(null);
-        setOdooLookupStatus('idle');
-        preferOdooParcelaRef.current = false;
         setParcelaNombre('');
         setParcelaId(null);
         setParcelaPct(null);
@@ -1197,9 +1109,9 @@ function App() {
   const parcelaHasPct = parcelaPct != null && parcelaPct !== '' && !Number.isNaN(Number(parcelaPct)) && Number(parcelaPct) > 0;
 
   const pendingPalotsCount = palotList.length + (toStringSafe(palotInput).trim() ? 1 : 0);
-  const isOlivoLocked = palotList.length > 0 || saveStatus === 'saving';
+  const isLookupLocked = palotList.length > 0 || saveStatus === 'saving';
   const palotKgsTrimmed = toStringSafe(palotKgs).trim();
-  const hasParcelaReady = !!parcelaId && (status === 'success' || odooLookupStatus === 'success');
+  const hasParcelaReady = !!parcelaId && status === 'success';
   const canSave = hasParcelaReady
     && !!parcelaId
     && pendingPalotsCount > 0
@@ -2131,22 +2043,19 @@ function App() {
         )}
 
         <div className="row">
-          <label>Introduce nº de olivo</label>
+          <label>Introduce nº de olivo (Odoo)</label>
           <input
-            value={olivo}
-            onChange={e => {
-              preferOdooParcelaRef.current = false;
-              setOlivo(e.target.value);
-            }}
-            placeholder="Ej. 123"
+            value={odooOlivo}
+            onChange={(e) => setOdooOlivo(e.target.value)}
+            placeholder="Ej. 00140"
             inputMode="numeric"
-            disabled={isOlivoLocked}
+            disabled={isLookupLocked}
           />
-          {isOlivoLocked && (
+          {isLookupLocked && (
             <span className="state warning">Nº de olivo bloqueado hasta guardar los palots pendientes.</span>
           )}
           {status === 'waiting' && <span className="state muted">Esperando a terminar de escribir…</span>}
-          {status === 'loading' && <span className="state muted">Buscando parcela…</span>}
+          {status === 'loading' && <span className="state muted">Buscando parcela sincronizada…</span>}
           {status === 'success' && parcelaNombre && (
             <div className="state ok">
               Parcela: {parcelaNombre} <span className="muted">(id {parcelaId})</span>
@@ -2155,39 +2064,8 @@ function App() {
               )}
             </div>
           )}
-          {status === 'error' && <span className="state error">No se encontró la parcela para ese olivo.</span>}
-        </div>
-
-        <div className="row">
-          <label>Introduce nº de olivo (Odoo)</label>
-          <input
-            value={odooOlivo}
-            onChange={(e) => setOdooOlivo(e.target.value)}
-            placeholder="Ej. 123 (Odoo)"
-            inputMode="numeric"
-            disabled={!isOnline}
-          />
-          {!isOnline && (
-            <span className="state muted">Búsqueda en Odoo disponible solo con conexión.</span>
-          )}
-          {isOnline && odooLookupStatus === 'waiting' && (
-            <span className="state muted">Esperando a terminar de escribir…</span>
-          )}
-          {isOnline && odooLookupStatus === 'loading' && (
-            <span className="state muted">Buscando en Odoo…</span>
-          )}
-          {isOnline && odooLookupStatus === 'success' && odooParcelaNombre && (
-            <div className="state ok">
-              Parcela (Odoo): {odooParcelaNombre}
-              {odooParcelaPct != null && (
-                <span className="pill" style={{ marginLeft: '0.5rem' }}>
-                  Donación: {String(odooParcelaPct)}%
-                </span>
-              )}
-            </div>
-          )}
-          {isOnline && odooLookupStatus === 'error' && (
-            <span className="state error">No se encontró el olivo en Odoo o hubo un error.</span>
+          {status === 'error' && (
+            <span className="state error">No se encontró el olivo sincronizado o hubo un error.</span>
           )}
         </div>
 
@@ -2882,32 +2760,21 @@ function ActivitiesView({
     setLookupStatus('loading');
     setLookupError('');
     try {
-      let parcela = null;
-      if (isOnline) {
-        try {
-          const res = await fetch(`${apiBase}/olivos/${encodeURIComponent(trimmed)}/parcela`, {
-            headers: { ...authHeaders },
-          });
-          if (res.ok) {
-            parcela = await res.json();
-          }
-        } catch (_) {
-          // ignore network errors and fallback to offline cache
-        }
+      const olivoRecord = await findOlivoByCodigo(trimmed);
+      const parcelaIdFromOlivo = Number(olivoRecord && olivoRecord.id_parcela);
+      if (!olivoRecord || !Number.isInteger(parcelaIdFromOlivo) || parcelaIdFromOlivo <= 0) {
+        throw new Error('not-found');
       }
-      if (!parcela) {
-        parcela = await offlineGetParcelaByOlivo(trimmed);
-      }
-      if (!parcela) throw new Error('not-found');
-      const enriched = parcela.id ? await getParcelaById(parcela.id).catch(() => null) : null;
-      setParcelaInfo(buildParcelaDisplay(enriched || parcela));
+      const parcelaData = await getParcelaById(parcelaIdFromOlivo).catch(() => null);
+      if (!parcelaData) throw new Error('no-parcela');
+      setParcelaInfo(buildParcelaDisplay(parcelaData));
       setLookupStatus('success');
     } catch (error) {
       setParcelaInfo(null);
       setLookupStatus('error');
-      setLookupError('No se encontró la parcela para ese olivo.');
+      setLookupError('Olivo no encontrado en los datos sincronizados desde Odoo.');
     }
-  }, [olivoValue, isOnline, apiBase, authHeaders]);
+  }, [olivoValue]);
 
   React.useEffect(() => {
     if (lookupTimeoutRef.current) clearTimeout(lookupTimeoutRef.current);
@@ -3210,14 +3077,15 @@ function ActivitiesView({
         </p>
         <form onSubmit={handleSaveActivity} className="activities-form">
           <div className="row">
-            <label>Nº de olivo</label>
+            <label>Nº de olivo (Odoo)</label>
             <input
               value={olivoValue}
               onChange={(e) => setOlivoValue(e.target.value)}
-              placeholder="Ej. 123"
+              placeholder="Ej. 00140"
               inputMode="numeric"
               autoComplete="off"
             />
+            <span className="muted" style={{ fontSize: '0.85rem' }}>Busca en la caché sincronizada desde Odoo, reconoce códigos con o sin ceros iniciales.</span>
             {lookupStatus === 'waiting' && <span className="state muted">Buscando parcela…</span>}
             {lookupStatus === 'loading' && <span className="state muted">Comprobando parcela…</span>}
             {lookupStatus === 'success' && parcelaInfo && (

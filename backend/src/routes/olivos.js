@@ -12,6 +12,14 @@ const requireAdmin = (req, res, next) => {
   next();
 };
 
+const normalizeDefaultCode = (value) => {
+  if (value === undefined || value === null) return '';
+  const trimmed = String(value).trim();
+  if (!trimmed) return '';
+  const withoutZeros = trimmed.replace(/^0+/, '');
+  return withoutZeros || '0';
+};
+
 // Create a new olivo
 router.post('/olivos', async (req, res) => {
   const { id_parcela } = req.body || {};
@@ -74,32 +82,25 @@ router.get('/olivos/:olivoId/parcela', async (req, res) => {
   if (!rawParam) {
     return res.status(400).json({ error: 'Referencia de olivo requerida' });
   }
-  const candidates = [];
-  candidates.push(rawParam);
-  const withoutZeros = rawParam.replace(/^0+/, '');
-  if (withoutZeros && withoutZeros !== rawParam) {
-    candidates.push(withoutZeros);
-  }
+  const normalizedCode = normalizeDefaultCode(rawParam);
+  const normalizedForCompare = (normalizedCode || '0').toLowerCase();
   const numericId = Number(rawParam);
   const hasNumeric = Number.isInteger(numericId) && numericId > 0;
-  if (hasNumeric) {
-    const padded = String(numericId).padStart(Math.max(rawParam.length, 5), '0');
-    if (!candidates.includes(padded)) candidates.push(padded);
-  }
   try {
     let olivoRow = null;
-    for (const candidate of candidates) {
-      const byCode = await db.public.many(
-        `SELECT id, parcel_id
-           FROM odoo_olivos
-          WHERE country_code = $1 AND lower(default_code) = lower($2)
-          LIMIT 1`,
-        [countryCode, candidate]
-      );
-      if (byCode && byCode[0]) {
-        olivoRow = byCode[0];
-        break;
-      }
+    const byCode = await db.public.many(
+      `SELECT id, parcel_id
+         FROM odoo_olivos
+        WHERE country_code = $1
+          AND (
+            lower(default_code) = lower($2)
+            OR lower(COALESCE(NULLIF(regexp_replace(default_code, '^0+', ''), ''), '0')) = $3
+          )
+        LIMIT 1`,
+      [countryCode, rawParam, normalizedForCompare]
+    );
+    if (byCode && byCode[0]) {
+      olivoRow = byCode[0];
     }
     if (!olivoRow && hasNumeric) {
       const byIdRows = await db.public.many(
