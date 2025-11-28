@@ -2,12 +2,19 @@
 
 Aplicación PWA para gestionar la relación parcela-palot durante la cosecha de olivas. El flujo está pensado para funcionar **siempre desplegado con Docker Compose**: Nginx sirve el frontend compilado, Express expone la API y Postgres almacena los datos.
 
-## Características principales
+## Características principales (v1.3.0)
 - Frontend React + Vite empaquetado como PWA con modo offline, sincronización manual y gestión de cola mientras no hay red.
-- Backend Node.js (Express) protegido con Basic Auth y endpoints para parcelas, palots, relaciones y usuarios.
+- Búsqueda de olivo unificada: el campo principal usa exclusivamente los códigos sincronizados desde Odoo (con o sin ceros iniciales) y bloquea el guardado hasta resolver la parcela.
+- Backend Node.js (Express) protegido con Basic Auth y endpoints para parcelas, palots, relaciones, usuarios, etiquetas y actividades.
 - Registro de actividades de campo con catálogo de tipos personalizable (icono + nombre) y guardado offline.
 - Postgres 16 como base de datos; scripts de importación masiva mediante `psql`.
 - Service worker con cacheo de shell, indicador de relaciones pendientes y botón de sincronizar.
+
+### Notas destacadas de la versión 1.3
+- **Solución definitiva a los ceros a la izquierda:** tanto la API como la caché offline normalizan las referencias (`00140`, `140`, etc.) para que siempre se localice la parcela correspondiente.
+- **Un único campo de búsqueda:** se retiró el input de “olivo antiguo”. Ahora el flujo depende al 100 % de los datos sincronizados desde Odoo, lo que evita desajustes entre fuentes.
+- **Botón Guardar más seguro:** sólo se habilita cuando hay parcela válida, kgs informados y la búsqueda de Odoo ha terminado. Se bloquea también mientras existan palots pendientes sin guardar.
+- **Actualización de versión:** backend y frontend pasan a `1.3.0` para que los despliegues identifiquen la nueva ergonomía.
 
 ## Requisitos previos
 - Docker 20+ y Docker Compose v2.
@@ -45,6 +52,13 @@ Aplicación PWA para gestionar la relación parcela-palot durante la cosecha de 
 - Para actualizar desde Git: `git pull && docker compose up -d --build` (se reutilizará el volumen de la base de datos).
 - Logs en vivo: `docker compose logs -f web backend db`.
 - Parar la pila: `docker compose down` (no elimina los volúmenes).
+
+### Checklist adicional para despliegues ≥ 1.3
+1. **Reconstruye imágenes**: `docker compose up -d --build` para asegurarte de que el frontend 1.3 queda empaquetado.
+2. **Sincroniza datos de Odoo**: entra con un usuario admin → menú “Administración” → “Sincronizar datos Odoo” y lanza la sincronización de parcelas/parajes/olivos. Esto rellena la caché usada por el nuevo buscador.
+3. **Verifica acceso**: desde la vista principal comprueba que el campo “Nº de olivo (Odoo)” encuentra una parcela real (por ejemplo un código con ceros iniciales) y que el estado pasa a “Parcela: …”.
+4. **Prueba guardado offline** (opcional): añade un palot sin conexión para confirmar que la cola y el nuevo bloqueo del campo se comportan como esperas.
+5. **Documenta la versión desplegada**: puedes obtenerla con `curl http://<host>/api/version` (debe devolver `1.3.0`).
 
 ## Importación de datos (CSV)
 El backend incluye `backend/db/import.psql` para cargar `parcelas`, `palots` y `olivos` rápidamente.
@@ -99,7 +113,8 @@ Notas:
   ```
 
 ## Funcionamiento offline y sincronización
-- El frontend guarda en IndexedDB las tablas relevantes y muestra el número de operaciones pendientes.
+- El frontend guarda en IndexedDB las tablas relevantes (parcelas, olivos sincronizados desde Odoo, palots, actividades…).
+- El buscador de olivos usa exclusivamente la caché de Odoo; si estás sin conexión sólo funcionará para registros descargados previamente.
 - Puedes forzar una sincronización con el botón “Sincronizar”. El estado (en línea, pendientes, última sync) aparece en la parte superior.
 - Las relaciones añadidas sin conexión se muestran con badge “Pendiente de sincronización” y se envían cuando vuelve la red.
 
