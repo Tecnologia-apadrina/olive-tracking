@@ -81,8 +81,9 @@ const SCHEMA_SQL_BASE = `
     id SERIAL PRIMARY KEY,
     nombre TEXT NOT NULL,
     icono TEXT DEFAULT '',
+    scope TEXT NOT NULL DEFAULT 'campo',
     country_code TEXT NOT NULL DEFAULT 'ES',
-    UNIQUE(nombre, country_code)
+    UNIQUE(nombre, country_code, scope)
   );
 
   CREATE TABLE IF NOT EXISTS parcela_activities (
@@ -99,6 +100,25 @@ const SCHEMA_SQL_BASE = `
 
   CREATE INDEX IF NOT EXISTS idx_parcela_activities_parcela ON parcela_activities(parcela_id);
   CREATE INDEX IF NOT EXISTS idx_parcela_activities_created_at ON parcela_activities(created_at);
+  CREATE INDEX IF NOT EXISTS idx_parcela_activities_country ON parcela_activities(country_code);
+  CREATE INDEX IF NOT EXISTS idx_parcelas_country ON parcelas(country_code);
+  CREATE INDEX IF NOT EXISTS idx_palots_country ON palots(country_code);
+  CREATE INDEX IF NOT EXISTS idx_parcelas_palots_country ON parcelas_palots(country_code);
+  CREATE INDEX IF NOT EXISTS idx_etiquetas_country ON etiquetas(country_code);
+  CREATE INDEX IF NOT EXISTS idx_activity_types_country ON activity_types(country_code);
+  CREATE INDEX IF NOT EXISTS idx_activity_types_scope_country ON activity_types(scope, country_code);
+
+  CREATE TABLE IF NOT EXISTS conservera_activities (
+    id SERIAL PRIMARY KEY,
+    activity_type_id INTEGER REFERENCES activity_types(id) ON DELETE RESTRICT,
+    started_at TIMESTAMPTZ DEFAULT now(),
+    finished_at TIMESTAMPTZ,
+    duration_seconds INTEGER,
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    country_code TEXT NOT NULL DEFAULT 'ES'
+  );
+  CREATE INDEX IF NOT EXISTS idx_conservera_activities_country ON conservera_activities(country_code);
+  CREATE INDEX IF NOT EXISTS idx_conservera_activities_started ON conservera_activities(started_at);
 
   CREATE TABLE IF NOT EXISTS odoo_configs (
     id SERIAL PRIMARY KEY,
@@ -137,6 +157,7 @@ const SCHEMA_SQL_BASE = `
     PRIMARY KEY (id, country_code)
   );
   CREATE INDEX IF NOT EXISTS idx_odoo_parcel_sigpacs_parcel_country ON odoo_parcel_sigpacs(parcel_id, country_code);
+  CREATE INDEX IF NOT EXISTS idx_odoo_parcel_sigpacs_country ON odoo_parcel_sigpacs(country_code);
 
   CREATE TABLE IF NOT EXISTS odoo_landscapes (
     id INTEGER NOT NULL,
@@ -157,6 +178,21 @@ const SCHEMA_SQL_BASE = `
     PRIMARY KEY (id, country_code)
   );
   CREATE INDEX IF NOT EXISTS idx_odoo_olivos_parcel_country ON odoo_olivos(parcel_id, country_code);
+  CREATE INDEX IF NOT EXISTS idx_odoo_parcelas_country ON odoo_parcelas(country_code);
+  CREATE INDEX IF NOT EXISTS idx_odoo_landscapes_country ON odoo_landscapes(country_code);
+  CREATE INDEX IF NOT EXISTS idx_odoo_olivos_country ON odoo_olivos(country_code);
+
+  CREATE TABLE IF NOT EXISTS conservera_activities (
+    id SERIAL PRIMARY KEY,
+    activity_type_id INTEGER REFERENCES activity_types(id) ON DELETE RESTRICT,
+    started_at TIMESTAMPTZ DEFAULT now(),
+    finished_at TIMESTAMPTZ,
+    duration_seconds INTEGER,
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    country_code TEXT NOT NULL DEFAULT 'ES'
+  );
+  CREATE INDEX IF NOT EXISTS idx_conservera_activities_country ON conservera_activities(country_code);
+  CREATE INDEX IF NOT EXISTS idx_conservera_activities_started ON conservera_activities(started_at);
 `;
 
 // Postgres-only migrations to evolve existing DBs.
@@ -210,11 +246,15 @@ const SCHEMA_SQL_ALTER = `
     id SERIAL PRIMARY KEY,
     nombre TEXT NOT NULL,
     icono TEXT DEFAULT '',
+    scope TEXT NOT NULL DEFAULT 'campo',
     UNIQUE(nombre)
   );
   ALTER TABLE IF EXISTS activity_types ADD COLUMN IF NOT EXISTS country_code TEXT NOT NULL DEFAULT 'ES';
+  ALTER TABLE IF EXISTS activity_types ADD COLUMN IF NOT EXISTS scope TEXT NOT NULL DEFAULT 'campo';
   ALTER TABLE IF EXISTS activity_types DROP CONSTRAINT IF EXISTS activity_types_nombre_key;
-  CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_types_nombre_country ON activity_types(nombre, country_code);
+  DROP INDEX IF EXISTS idx_activity_types_nombre_country;
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_types_nombre_country_scope ON activity_types(nombre, country_code, scope);
+  CREATE INDEX IF NOT EXISTS idx_activity_types_scope_country ON activity_types(scope, country_code);
   CREATE TABLE IF NOT EXISTS parcela_activities (
     id SERIAL PRIMARY KEY,
     parcela_id INTEGER REFERENCES parcelas(id) ON DELETE CASCADE,
@@ -228,6 +268,12 @@ const SCHEMA_SQL_ALTER = `
   ALTER TABLE IF EXISTS parcela_activities ADD COLUMN IF NOT EXISTS country_code TEXT NOT NULL DEFAULT 'ES';
   CREATE INDEX IF NOT EXISTS idx_parcela_activities_parcela ON parcela_activities(parcela_id);
   CREATE INDEX IF NOT EXISTS idx_parcela_activities_created_at ON parcela_activities(created_at);
+  CREATE INDEX IF NOT EXISTS idx_parcela_activities_country ON parcela_activities(country_code);
+  CREATE INDEX IF NOT EXISTS idx_parcelas_country ON parcelas(country_code);
+  CREATE INDEX IF NOT EXISTS idx_palots_country ON palots(country_code);
+  CREATE INDEX IF NOT EXISTS idx_parcelas_palots_country ON parcelas_palots(country_code);
+  CREATE INDEX IF NOT EXISTS idx_etiquetas_country ON etiquetas(country_code);
+  CREATE INDEX IF NOT EXISTS idx_activity_types_country ON activity_types(country_code);
 
   CREATE TABLE IF NOT EXISTS odoo_configs (
     id SERIAL PRIMARY KEY,
@@ -267,6 +313,7 @@ const SCHEMA_SQL_ALTER = `
   );
   CREATE INDEX IF NOT EXISTS idx_odoo_parcel_sigpacs_parcel_country ON odoo_parcel_sigpacs(parcel_id, country_code);
   ALTER TABLE IF EXISTS odoo_parcelas ADD COLUMN IF NOT EXISTS landscape_id INTEGER;
+  CREATE INDEX IF NOT EXISTS idx_odoo_parcel_sigpacs_country ON odoo_parcel_sigpacs(country_code);
 
   CREATE TABLE IF NOT EXISTS odoo_landscapes (
     id INTEGER NOT NULL,
@@ -287,6 +334,9 @@ const SCHEMA_SQL_ALTER = `
     PRIMARY KEY (id, country_code)
   );
   CREATE INDEX IF NOT EXISTS idx_odoo_olivos_parcel_country ON odoo_olivos(parcel_id, country_code);
+  CREATE INDEX IF NOT EXISTS idx_odoo_parcelas_country ON odoo_parcelas(country_code);
+  CREATE INDEX IF NOT EXISTS idx_odoo_landscapes_country ON odoo_landscapes(country_code);
+  CREATE INDEX IF NOT EXISTS idx_odoo_olivos_country ON odoo_olivos(country_code);
 `;
 
 const forceMem = (process.env.USE_MEM || '').toLowerCase() === '1' || (process.env.USE_MEM || '').toLowerCase() === 'true';

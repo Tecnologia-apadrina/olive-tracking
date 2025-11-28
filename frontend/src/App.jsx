@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   initOfflineStore,
   saveAuthSession,
@@ -53,7 +53,8 @@ const toTagIds = (list) => {
 const normalizeRole = (role) => {
   if (!role) return '';
   const mapped = role === 'user' ? 'campo' : role;
-  return mapped === 'metricas' ? 'metricas' : mapped;
+  const allowed = ['campo', 'conservera', 'patio', 'molino', 'metricas', 'admin'];
+  return allowed.includes(mapped) ? mapped : '';
 };
 
 const normalizeCountryCode = (country) => {
@@ -105,6 +106,55 @@ const formatDayHeadingLabel = (dayKey) => {
   if (Number.isNaN(dateObj.getTime())) return dayKey;
   const formatted = dateObj.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
   return formatted ? formatted.charAt(0).toUpperCase() + formatted.slice(1) : dayKey;
+};
+
+const formatDateTimeSafe = (iso) => {
+  if (!iso) return '-';
+  try {
+    return new Date(iso).toLocaleString('es-ES', { dateStyle: 'short', timeStyle: 'short' });
+  } catch (_) {
+    return iso;
+  }
+};
+
+const formatDuration = (seconds) => {
+  if (seconds == null || Number.isNaN(Number(seconds))) return '-';
+  const total = Math.max(0, Math.trunc(Number(seconds)));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const parts = [];
+  if (h) parts.push(`${h}h`);
+  if (m || h) parts.push(`${m}m`);
+  parts.push(`${s}s`);
+  return parts.join(' ');
+};
+
+const filterActivityTypesForRole = (types, role) => {
+  const scope = role === 'conservera' ? 'conservera' : (role === 'campo' ? 'campo' : null);
+  if (!scope) return Array.isArray(types) ? types : [];
+  return (Array.isArray(types) ? types : []).filter((type) => {
+    const tScope = (type && type.scope ? String(type.scope).toLowerCase() : 'campo');
+    return scope === (tScope === 'conservera' ? 'conservera' : 'campo');
+  });
+};
+
+const normalizeScopeValue = (scope) => (String(scope || '').toLowerCase() === 'conservera' ? 'conservera' : 'campo');
+const filterActivitiesForRole = (activities, role, activityTypes = []) => {
+  const scope = role === 'conservera' ? 'conservera' : (role === 'campo' ? 'campo' : null);
+  if (!scope) return Array.isArray(activities) ? activities : [];
+  const typeScopeMap = new Map();
+  (Array.isArray(activityTypes) ? activityTypes : []).forEach((type) => {
+    if (type && type.id != null) {
+      typeScopeMap.set(Number(type.id), normalizeScopeValue(type.scope));
+    }
+  });
+  return (Array.isArray(activities) ? activities : []).filter((activity) => {
+    const fromType = typeScopeMap.get(Number(activity && activity.activity_type_id));
+    const fromRecord = normalizeScopeValue(activity && activity.activity_type_scope);
+    const effective = fromType || fromRecord || 'campo';
+    return effective === scope;
+  });
 };
 
 function App() {
@@ -165,6 +215,9 @@ function App() {
   const [tagDeleteStatus, setTagDeleteStatus] = useState({});
   const [activityTypes, setActivityTypes] = useState([]);
   const [activitiesFeed, setActivitiesFeed] = useState([]);
+  useEffect(() => {
+    setActivityTypes((prev) => filterActivityTypesForRole(prev, authRole));
+  }, [authRole]);
   const countryMeta = getCountryMeta(authCountry);
   const syncingRef = useRef(false);
   const syncTimeoutRef = useRef(null);
@@ -178,12 +231,13 @@ function App() {
         listActivityTypes().catch(() => []),
         listActivities().catch(() => []),
       ]);
-      if (Array.isArray(typesList)) setActivityTypes(typesList);
-      if (Array.isArray(activitiesList)) setActivitiesFeed(activitiesList);
+      const filteredTypes = filterActivityTypesForRole(typesList, authRole);
+      if (Array.isArray(typesList)) setActivityTypes(filteredTypes);
+      if (Array.isArray(activitiesList)) setActivitiesFeed(filterActivitiesForRole(activitiesList, authRole, filteredTypes));
     } catch (_) {
       // ignore offline cache refresh errors
     }
-  }, []);
+  }, [authRole]);
   useEffect(() => {
     let cancelled = false;
 
@@ -213,11 +267,12 @@ function App() {
             }).catch(() => {});
           }
         }
+        const resolvedRole = normalizeRole(role);
         if (!cancelled && token) {
           await applySession({
             username: username || '',
             token,
-            role,
+            role: resolvedRole || role,
             country: country || 'ES',
             persist: false,
             resetOfflineOnChange: false,
@@ -234,8 +289,9 @@ function App() {
         if (!cancelled) {
           setPendingCount(Array.isArray(pending) ? pending.length : 0);
           setAvailableTags(Array.isArray(tagsList) ? tagsList : []);
-          setActivityTypes(Array.isArray(typesList) ? typesList : []);
-          setActivitiesFeed(Array.isArray(activitiesList) ? activitiesList : []);
+          const filteredTypes = filterActivityTypesForRole(typesList, resolvedRole || authRole);
+          setActivityTypes(filteredTypes);
+          setActivitiesFeed(filterActivitiesForRole(activitiesList, resolvedRole || authRole, filteredTypes));
         }
       } catch (_) {}
       if (cancelled) return;
@@ -286,6 +342,13 @@ function App() {
     if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
   }, []);
 
+  // Redirigir conservera directamente a su vista al cargar sesión
+  useEffect(() => {
+    if (authRole === 'conservera' && view !== 'actividades-conservera') {
+      handleNav('/actividades-conservera');
+    }
+  }, [authRole, view]);
+
   // API base fija usando proxy de Nginx en Docker
   const apiBase = '/api';
   // Load app version whenever online
@@ -304,7 +367,7 @@ function App() {
     }).catch(() => {});
     return () => { cancelled = true; };
   }, [isOnline]);
-  const authHeaders = authToken ? { Authorization: `Basic ${authToken}` } : {};
+  const authHeaders = useMemo(() => (authToken ? { Authorization: `Basic ${authToken}` } : {}), [authToken]);
   const applySession = async ({ username, token, role, country, persist = true, resetOfflineOnChange = true }) => {
     const safeUsername = username || '';
     const safeRole = normalizeRole(role);
@@ -425,14 +488,14 @@ function App() {
         return 'users';
       case '/actividades':
         return 'actividades';
+      case '/actividades-conservera':
+        return (authRoleRef.current === 'admin' || authRoleRef.current === 'metricas' || authRoleRef.current === 'conservera')
+          ? 'actividades-conservera'
+          : 'main';
       case '/tipos-actividad':
         return (authRoleRef.current === 'admin' || authRoleRef.current === 'metricas') ? 'tipos-actividad' : 'main';
       case '/olivos':
         return 'olivos';
-      case '/parcelas':
-        return 'parcelas';
-      case '/parajes':
-        return 'parajes';
       case '/palots':
         return 'palots';
       case '/metrics':
@@ -1948,13 +2011,15 @@ function App() {
                 <img src="/Trazoliva-trans_tiny.png" alt="Trazoliva" className="logo clickable" />
               </a>
             </div>
-            <a
-              className={`btn ${view === 'main' ? '' : 'btn-outline'} mobile-app-link`}
-              href="/"
-              onClick={(e) => { e.preventDefault(); handleNav('/'); }}
-            >
-              Trazoliva
-            </a>
+            {authRole !== 'conservera' && (
+              <a
+                className={`btn ${view === 'main' ? '' : 'btn-outline'} mobile-app-link`}
+                href="/"
+                onClick={(e) => { e.preventDefault(); handleNav('/'); }}
+              >
+                Trazoliva
+              </a>
+            )}
             <button className="hamburger" aria-label="Abrir menú" aria-expanded={menuOpen} onClick={() => setMenuOpen((prev) => {
               const next = !prev;
               if (!next) setAdminMenuOpen(false);
@@ -1964,9 +2029,14 @@ function App() {
             </button>
             <div className={`header-nav ${menuOpen ? 'open' : ''}`}>
               <div className="header-links">
-                <a className={`btn ${view === 'main' ? '' : 'btn-outline'} header-app-link`} href="/" onClick={(e) => { e.preventDefault(); handleNav('/'); }}>Trazoliva</a>
-                {authRole === 'admin' && (
-                  <a className={`btn ${view === 'actividades' ? '' : 'btn-outline'}`} href="/actividades" onClick={(e) => { e.preventDefault(); handleNav('/actividades'); }}>Actividades</a>
+                {authRole !== 'conservera' && (
+                  <a className={`btn ${view === 'main' ? '' : 'btn-outline'} header-app-link`} href="/" onClick={(e) => { e.preventDefault(); handleNav('/'); }}>Trazoliva</a>
+                )}
+                {(authRole === 'admin' || authRole === 'metricas') && (
+                  <a className={`btn ${view === 'actividades' ? '' : 'btn-outline'}`} href="/actividades" onClick={(e) => { e.preventDefault(); handleNav('/actividades'); }}>Actividades campo</a>
+                )}
+                {(authRole === 'admin' || authRole === 'metricas' || authRole === 'conservera') && (
+                  <a className={`btn ${view === 'actividades-conservera' ? '' : 'btn-outline'}`} href="/actividades-conservera" onClick={(e) => { e.preventDefault(); handleNav('/actividades-conservera'); }}>Actividades conservera</a>
                 )}
                 {(authRole === 'admin' || authRole === 'metricas') && (
                   <a className={`btn ${view === 'metrics' ? '' : 'btn-outline'}`} href="/metrics" onClick={(e) => { e.preventDefault(); handleNav('/metrics'); }}>Métricas</a>
@@ -1994,8 +2064,6 @@ function App() {
                       {authRole === 'admin' && (
                         <>
                           <a className={`btn ${view === 'users' ? '' : 'btn-outline'}`} href="/users" onClick={(e) => { e.preventDefault(); handleNav('/users'); }}>Usuarios</a>
-                          <a className={`btn ${view === 'parcelas' ? '' : 'btn-outline'}`} href="/parcelas" onClick={(e) => { e.preventDefault(); handleNav('/parcelas'); }}>Parcelas</a>
-                          <a className={`btn ${view === 'parajes' ? '' : 'btn-outline'}`} href="/parajes" onClick={(e) => { e.preventDefault(); handleNav('/parajes'); }}>Parajes</a>
                           <a className={`btn ${view === 'palots' ? '' : 'btn-outline'}`} href="/palots" onClick={(e) => { e.preventDefault(); handleNav('/palots'); }}>Palots</a>
                           <a className={`btn ${view === 'etiquetas' ? '' : 'btn-outline'}`} href="/etiquetas" onClick={(e) => { e.preventDefault(); handleNav('/etiquetas'); }}>Etiquetas</a>
                           <a className={`btn ${view === 'configuracion' ? '' : 'btn-outline'}`} href="/configuracion" onClick={(e) => { e.preventDefault(); handleNav('/configuracion'); }}>Configuración</a>
@@ -2295,7 +2363,7 @@ function App() {
         />
       )}
 
-      {authToken && view === 'actividades' && (
+      {authToken && authRole !== 'campo' && authRole !== 'conservera' && view === 'actividades' && (
         <ActivitiesView
           apiBase={apiBase}
           authHeaders={authHeaders}
@@ -2308,6 +2376,17 @@ function App() {
           refreshAll={refreshAllData}
           formatDateTime={formatDateTime}
           formatDayHeading={formatDayHeading}
+        />
+      )}
+
+      {authToken && authRole === 'conservera' && view === 'actividades-conservera' && (
+        <ConserveraActivitiesView
+          apiBase={apiBase}
+          authHeaders={authHeaders}
+          isOnline={isOnline}
+          activityTypes={activityTypes}
+          authUser={authUser}
+          authRole={authRole}
         />
       )}
 
@@ -2324,14 +2403,6 @@ function App() {
 
       {authToken && view === 'olivos' && (
         <OlivosView apiBase={apiBase} authHeaders={authHeaders} />
-      )}
-
-      {authToken && view === 'parcelas' && (
-        <ParcelasView apiBase={apiBase} authHeaders={authHeaders} countryCode={authCountry} />
-      )}
-
-      {authToken && authRole === 'admin' && view === 'parajes' && (
-        <ParajesView apiBase={apiBase} authHeaders={authHeaders} />
       )}
 
       {authToken && view === 'palots' && (
@@ -2457,6 +2528,7 @@ function ActivitiesView({
   formatDayHeading,
 }) {
   const [olivoValue, setOlivoValue] = React.useState('');
+  const [resolvedOlivoId, setResolvedOlivoId] = React.useState(null);
   const [parcelaInfo, setParcelaInfo] = React.useState(null);
   const [lookupStatus, setLookupStatus] = React.useState('idle'); // idle | waiting | loading | success | error
   const [lookupError, setLookupError] = React.useState('');
@@ -2553,6 +2625,7 @@ function ActivitiesView({
     if (exportTypeFilter === 'all') return safeActivities;
     return safeActivities.filter((activity) => String(activity.activity_type_id) === String(exportTypeFilter));
   }, [safeActivities, exportTypeFilter]);
+  const activityScopeLabel = authRole === 'conservera' ? 'conservera' : 'campo';
 
   React.useEffect(() => {
     if (!editingActivityKey) return;
@@ -2728,6 +2801,7 @@ function ActivitiesView({
 
   const resetForm = () => {
     setOlivoValue('');
+    setResolvedOlivoId(null);
     setParcelaInfo(null);
     setPersonasInput('1');
     setNotasInput('');
@@ -2753,6 +2827,7 @@ function ActivitiesView({
     const trimmed = olivoValue.trim();
     if (!trimmed) {
       setParcelaInfo(null);
+      setResolvedOlivoId(null);
       setLookupStatus('idle');
       setLookupError('');
       return;
@@ -2767,10 +2842,12 @@ function ActivitiesView({
       }
       const parcelaData = await getParcelaById(parcelaIdFromOlivo).catch(() => null);
       if (!parcelaData) throw new Error('no-parcela');
+      setResolvedOlivoId(Number(olivoRecord.id));
       setParcelaInfo(buildParcelaDisplay(parcelaData));
       setLookupStatus('success');
     } catch (error) {
       setParcelaInfo(null);
+      setResolvedOlivoId(null);
       setLookupStatus('error');
       setLookupError('Olivo no encontrado en los datos sincronizados desde Odoo.');
     }
@@ -2780,6 +2857,7 @@ function ActivitiesView({
     if (lookupTimeoutRef.current) clearTimeout(lookupTimeoutRef.current);
     if (!olivoValue.trim()) {
       setParcelaInfo(null);
+      setResolvedOlivoId(null);
       setLookupStatus('idle');
       setLookupError('');
       return;
@@ -2807,10 +2885,9 @@ function ActivitiesView({
       setSaveMessage('Selecciona un tipo de actividad.');
       return;
     }
-    const olivoIdNum = Number(olivoValue.trim());
-    if (!Number.isInteger(olivoIdNum) || olivoIdNum <= 0) {
+    if (!Number.isInteger(resolvedOlivoId) || resolvedOlivoId <= 0) {
       setSaveStatus('error');
-      setSaveMessage('Introduce un nº de olivo válido.');
+      setSaveMessage('Busca primero un olivo válido.');
       return;
     }
     const personasNum = Math.max(1, Number.parseInt(personasInput, 10) || 1);
@@ -2827,7 +2904,7 @@ function ActivitiesView({
       activity_type_id: Number(selectedType.id),
       activity_type_nombre: selectedType.nombre,
       activity_type_icono: selectedType.icono,
-      olivo_id: olivoIdNum,
+      olivo_id: resolvedOlivoId,
       personas: personasNum,
       notas,
       created_by_username: authUser || '',
@@ -2844,7 +2921,7 @@ function ActivitiesView({
       }
       const body = {
         activity_type_id: payload.activity_type_id,
-        olivo_id: olivoIdNum,
+        olivo_id: resolvedOlivoId,
         parcela_id: payload.parcela_id,
         personas: personasNum,
       };
@@ -3070,9 +3147,9 @@ function ActivitiesView({
   return (
     <div className="activities-grid">
       <div className="card activities-card">
-        <h1>Registrar actividad en campo</h1>
+        <h1>Registrar actividad ({activityScopeLabel})</h1>
         <p className="muted">
-          Guarda tareas realizadas en el olivar indicando el olivo trabajado, el tipo de actividad, el número de personas y notas.
+          Guarda tareas realizadas en el ámbito seleccionado indicando el olivo trabajado, el tipo de actividad, el número de personas y notas.
           El nº de parcela se busca automáticamente y puedes trabajar sin conexión.
         </p>
         <form onSubmit={handleSaveActivity} className="activities-form">
@@ -3226,6 +3303,200 @@ function ActivitiesView({
   );
 }
 
+function ConserveraActivitiesView({ apiBase, authHeaders, isOnline, activityTypes, authUser, authRole }) {
+  const conserveraTypes = React.useMemo(
+    () => (Array.isArray(activityTypes) ? activityTypes : []).filter((t) => (t.scope || 'campo') === 'conservera'),
+    [activityTypes]
+  );
+  const [items, setItems] = React.useState([]);
+  const [status, setStatus] = React.useState('idle'); // idle | loading | ready | error
+  const [message, setMessage] = React.useState('');
+  const [error, setError] = React.useState('');
+  const [actionStatus, setActionStatus] = React.useState({});
+
+  const load = React.useCallback(async () => {
+    setStatus('loading');
+    setError('');
+    try {
+      const res = await fetch(`${apiBase}/activities/conservera`, { headers: { ...authHeaders } });
+      const data = await res.json().catch(() => []);
+      if (!res.ok) throw new Error(data.error || 'No se pudieron cargar las actividades');
+      setItems(Array.isArray(data) ? data : []);
+      setStatus('ready');
+    } catch (err) {
+      setStatus('error');
+      setError(err && err.message ? err.message : 'Error al cargar');
+    }
+  }, [apiBase, authHeaders]);
+
+  React.useEffect(() => {
+    if (!authHeaders || Object.keys(authHeaders).length === 0) return;
+    load();
+  }, [load, authHeaders]);
+
+  const startActivity = async (typeId) => {
+    if (hasActiveMine) {
+      setMessage('Ya hay una actividad en curso. Finalízala antes de iniciar otra.');
+      return;
+    }
+    if (!isOnline) {
+      setMessage('Conéctate para iniciar una actividad.');
+      return;
+    }
+    setActionStatus((prev) => ({ ...prev, [`start-${typeId}`]: 'saving' }));
+    setMessage('');
+    try {
+      const res = await fetch(`${apiBase}/activities/conservera/start`, {
+        method: 'POST',
+        headers: { ...authHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ activity_type_id: typeId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'No se pudo iniciar');
+      }
+      setMessage(`Actividad "${data.activity_type_nombre || typeId}" iniciada.`);
+      await load();
+    } catch (err) {
+      setError(err && err.message ? err.message : 'Error al iniciar actividad');
+    } finally {
+      setActionStatus((prev) => ({ ...prev, [`start-${typeId}`]: 'idle' }));
+    }
+  };
+
+  const finishActivity = async (id) => {
+    if (!isOnline) {
+      setMessage('Conéctate para finalizar una actividad.');
+      return;
+    }
+    setActionStatus((prev) => ({ ...prev, [`finish-${id}`]: 'saving' }));
+    setMessage('');
+    try {
+      const res = await fetch(`${apiBase}/activities/conservera/${id}/finish`, {
+        method: 'POST',
+        headers: { ...authHeaders },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'No se pudo finalizar');
+      setMessage(`Actividad finalizada. Duración: ${formatDuration(data.duration_seconds)}.`);
+      await load();
+    } catch (err) {
+      setError(err && err.message ? err.message : 'Error al finalizar actividad');
+    } finally {
+      setActionStatus((prev) => ({ ...prev, [`finish-${id}`]: 'idle' }));
+    }
+  };
+
+  const activeItems = React.useMemo(() => items.filter((it) => !it.finished_at), [items]);
+  const finishedItems = React.useMemo(() => items.filter((it) => it.finished_at), [items]);
+  const hasActiveMine = React.useMemo(
+    () => activeItems.some((it) => (it.created_by_username && it.created_by_username === authUser) || (!it.created_by_username && it.created_by === authUser)),
+    [activeItems, authUser]
+  );
+
+  return (
+    <div className="card grid">
+      <div className="controls" style={{ justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+        <div>
+          <h1>Actividades conservera</h1>
+          <span className="muted">Registra inicio y fin de cada actividad de conservera. Se calcula la duración automáticamente.</span>
+        </div>
+        <button className="btn btn-outline" onClick={load} disabled={status === 'loading'}>Recargar</button>
+      </div>
+
+      {!isOnline && <span className="state warning">Modo offline: no puedes iniciar/finalizar hasta volver a conectar.</span>}
+      {message && <span className="state ok">{message}</span>}
+      {error && <span className="state error">{error}</span>}
+
+      <div className="grid" style={{ gap: '0.75rem' }}>
+        <div>
+          <h2>Tipos disponibles</h2>
+          {conserveraTypes.length === 0 ? (
+            <span className="muted">No hay tipos de actividad de conservera configurados.</span>
+          ) : (
+            <div className="controls" style={{ flexWrap: 'wrap', gap: '0.5rem' }}>
+              {conserveraTypes.map((type) => (
+                <button
+                  key={type.id}
+                  className="btn"
+                  onClick={() => startActivity(type.id)}
+                  disabled={actionStatus[`start-${type.id}`] === 'saving' || !isOnline || hasActiveMine}
+                >
+                  {actionStatus[`start-${type.id}`] === 'saving' ? 'Iniciando…' : `Iniciar ${type.nombre}`}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="card" style={{ border: '1px solid var(--border)' }}>
+          <h2>En curso</h2>
+          {activeItems.length === 0 ? (
+            <span className="muted">No hay actividades en curso.</span>
+          ) : (
+            <ul className="activities-type-list">
+              {activeItems.map((item) => (
+                <li key={item.id} className="activities-type-item">
+                  <div className="activities-type-row" style={{ justifyContent: 'space-between' }}>
+                    <div className="activities-type-chip">
+                      <span className="activity-type-icon">{item.activity_type_icono || '•'}</span>
+                      <span>{item.activity_type_nombre || `Tipo ${item.activity_type_id}`}</span>
+                      <span className="badge" style={{ marginLeft: '0.5rem' }}>Inicio: {formatDateTimeSafe(item.started_at)}</span>
+                    </div>
+                    <div className="activities-type-actions">
+                      {item.created_by_username && (
+                        <span className="muted" style={{ marginRight: '0.5rem' }}>Usuario: {item.created_by_username}</span>
+                      )}
+                      {authRole === 'admin' || (item.created_by_username && item.created_by_username === authUser) ? (
+                        <button
+                          type="button"
+                          className="btn btn-outline btn-sm"
+                          onClick={() => finishActivity(item.id)}
+                          disabled={actionStatus[`finish-${item.id}`] === 'saving' || !isOnline}
+                        >
+                          {actionStatus[`finish-${item.id}`] === 'saving' ? 'Finalizando…' : 'Finalizar'}
+                        </button>
+                      ) : (
+                        <span className="muted">Solo el creador/admin puede finalizar.</span>
+                      )}
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="card" style={{ border: '1px solid var(--border)' }}>
+          <h2>Histórico reciente</h2>
+          {finishedItems.length === 0 ? (
+            <span className="muted">Aún no hay actividades finalizadas.</span>
+          ) : (
+            <ul className="activities-type-list">
+              {finishedItems.map((item) => (
+                <li key={item.id} className="activities-type-item">
+                  <div className="activities-type-row" style={{ justifyContent: 'space-between' }}>
+                    <div className="activities-type-chip">
+                      <span className="activity-type-icon">{item.activity_type_icono || '•'}</span>
+                      <span>{item.activity_type_nombre || `Tipo ${item.activity_type_id}`}</span>
+                      <span className="badge" style={{ marginLeft: '0.5rem' }}>Inicio: {formatDateTimeSafe(item.started_at)}</span>
+                      <span className="badge" style={{ marginLeft: '0.5rem' }}>Fin: {formatDateTimeSafe(item.finished_at)}</span>
+                      <span className="badge" style={{ marginLeft: '0.5rem' }}>Duración: {formatDuration(item.duration_seconds)}</span>
+                    </div>
+                    <div className="activities-type-actions">
+                      <span className="muted">Usuario: {item.created_by_username || authUser || '-'}</span>
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ActivityTypesView({
   apiBase,
   authHeaders,
@@ -3235,21 +3506,22 @@ function ActivityTypesView({
 }) {
   const [typeNameDraft, setTypeNameDraft] = React.useState('');
   const [typeIconDraft, setTypeIconDraft] = React.useState('');
+  const [typeScopeDraft, setTypeScopeDraft] = React.useState('campo');
   const [typeCreateStatus, setTypeCreateStatus] = React.useState('idle');
   const [typeCreateError, setTypeCreateError] = React.useState('');
   const [typeUpdateStatus, setTypeUpdateStatus] = React.useState({});
   const [typeDeleteStatus, setTypeDeleteStatus] = React.useState({});
   const [editingTypeId, setEditingTypeId] = React.useState(null);
-  const [editingDraft, setEditingDraft] = React.useState({ nombre: '', icono: '' });
+  const [editingDraft, setEditingDraft] = React.useState({ nombre: '', icono: '', scope: 'campo' });
 
   const startEditType = (type) => {
     setEditingTypeId(type.id);
-    setEditingDraft({ nombre: type.nombre || '', icono: type.icono || '' });
+    setEditingDraft({ nombre: type.nombre || '', icono: type.icono || '', scope: type.scope || 'campo' });
   };
 
   const cancelEditType = () => {
     setEditingTypeId(null);
-    setEditingDraft({ nombre: '', icono: '' });
+    setEditingDraft({ nombre: '', icono: '', scope: 'campo' });
   };
 
   const handleCreateType = async (event) => {
@@ -3271,7 +3543,7 @@ function ActivityTypesView({
       const res = await fetch(`${apiBase}/activity-types`, {
         method: 'POST',
         headers: { ...authHeaders, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ nombre: name, icono: typeIconDraft.trim() }),
+        body: JSON.stringify({ nombre: name, icono: typeIconDraft.trim(), scope: typeScopeDraft }),
       });
       if (!res.ok) {
         const errBody = await res.json().catch(() => ({}));
@@ -3283,6 +3555,7 @@ function ActivityTypesView({
       setTypeCreateStatus('ok');
       setTypeNameDraft('');
       setTypeIconDraft('');
+      setTypeScopeDraft('campo');
       setTimeout(() => setTypeCreateStatus('idle'), 2000);
     } catch (error) {
       setTypeCreateStatus('error');
@@ -3304,7 +3577,11 @@ function ActivityTypesView({
       const res = await fetch(`${apiBase}/activity-types/${typeId}`, {
         method: 'PUT',
         headers: { ...authHeaders, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ nombre: editingDraft.nombre.trim(), icono: editingDraft.icono.trim() }),
+        body: JSON.stringify({
+          nombre: editingDraft.nombre.trim(),
+          icono: editingDraft.icono.trim(),
+          scope: editingDraft.scope || 'campo',
+        }),
       });
       if (!res.ok) {
         const errBody = await res.json().catch(() => ({}));
@@ -3355,7 +3632,7 @@ function ActivityTypesView({
   return (
     <div className="card activities-types-card" style={{ maxWidth: '720px', margin: '0 auto', width: '100%' }}>
       <h1>Tipos de actividad</h1>
-      <p className="muted">Define el catálogo disponible en la app para roles admin y métricas. Los cambios se propagan al modo offline tras sincronizar.</p>
+      <p className="muted">Define el catálogo disponible en la app y marca si cada tipo pertenece a Campo o Conservera. Los cambios se propagan al modo offline tras sincronizar.</p>
       <form onSubmit={handleCreateType} className="activities-type-form">
         <div className="row">
           <label>Nombre</label>
@@ -3380,6 +3657,17 @@ function ActivityTypesView({
             placeholder="Emoji o texto corto"
             disabled={typeCreateStatus === 'saving'}
           />
+        </div>
+        <div className="row">
+          <label>Ámbito</label>
+          <select
+            value={typeScopeDraft}
+            onChange={(e) => setTypeScopeDraft(e.target.value === 'conservera' ? 'conservera' : 'campo')}
+            disabled={typeCreateStatus === 'saving'}
+          >
+            <option value="campo">Campo</option>
+            <option value="conservera">Conservera</option>
+          </select>
         </div>
         <button type="submit" className="btn" disabled={typeCreateStatus === 'saving' || !isOnline}>
           {typeCreateStatus === 'saving' ? 'Creando…' : 'Añadir tipo'}
@@ -3411,6 +3699,13 @@ function ActivityTypesView({
                       onChange={(e) => setEditingDraft((prev) => ({ ...prev, icono: e.target.value }))}
                       placeholder="Icono"
                     />
+                    <select
+                      value={editingDraft.scope || 'campo'}
+                      onChange={(e) => setEditingDraft((prev) => ({ ...prev, scope: e.target.value === 'conservera' ? 'conservera' : 'campo' }))}
+                    >
+                      <option value="campo">Campo</option>
+                      <option value="conservera">Conservera</option>
+                    </select>
                     <div className="activities-type-actions">
                       <button
                         type="button"
@@ -3435,6 +3730,7 @@ function ActivityTypesView({
                     <div className="activities-type-chip">
                       <span className="activity-type-icon">{type.icono || '•'}</span>
                       <span>{type.nombre}</span>
+                      <span className="badge" style={{ marginLeft: '0.5rem' }}>{type.scope === 'conservera' ? 'Conservera' : 'Campo'}</span>
                     </div>
                     <div className="activities-type-actions">
                       <button type="button" className="btn btn-outline btn-sm" onClick={() => startEditType(type)}>
@@ -5651,6 +5947,7 @@ function UsersView({ apiBase, authHeaders, appVersion, dbUrl, authUser, authRole
           </select>
           <select value={role} onChange={e => setRole(e.target.value)}>
             <option value="campo">campo</option>
+            <option value="conservera">conservera</option>
             <option value="patio">patio</option>
             <option value="molino">molino</option>
             <option value="metricas">metricas</option>
@@ -5669,6 +5966,7 @@ function UsersView({ apiBase, authHeaders, appVersion, dbUrl, authUser, authRole
               <input style={{ width: 160 }} value={coalesce(drafts[us.id] && drafts[us.id].username, '')} onChange={e => setDrafts(d => ({ ...d, [us.id]: { ...(d[us.id]||{}), username: e.target.value } }))} />
               <select value={coalesce(drafts[us.id] && drafts[us.id].role, 'campo')} onChange={e => setDrafts(d => ({ ...d, [us.id]: { ...(d[us.id]||{}), role: e.target.value } }))}>
                 <option value="campo">campo</option>
+                <option value="conservera">conservera</option>
                 <option value="patio">patio</option>
                 <option value="molino">molino</option>
                 <option value="metricas">metricas</option>

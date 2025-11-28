@@ -12,6 +12,11 @@ const requireAdmin = (req, res, next) => {
   next();
 };
 
+// Importaciones manuales deshabilitadas para evitar inconsistencias con Odoo
+router.use('/import', requireAuth, requireAdmin, (_req, res) => {
+  return res.status(410).json({ error: 'Importación/limpieza manual deshabilitada. Usa la sincronización con Odoo.' });
+});
+
 function normalizeKey(s) {
   return String(s || '')
     .trim()

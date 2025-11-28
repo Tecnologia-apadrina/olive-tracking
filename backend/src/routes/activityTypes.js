@@ -20,19 +20,37 @@ const normalizeText = (value) => {
   return String(value).trim();
 };
 
+const allowedScopes = ['campo', 'conservera'];
+const normalizeScope = (raw) => {
+  const value = (raw || '').toString().trim().toLowerCase();
+  return allowedScopes.includes(value) ? value : 'campo';
+};
+
+const scopeForRole = (role) => {
+  if (role === 'conservera') return 'conservera';
+  if (role === 'campo') return 'campo';
+  return null; // admin/metricas or others -> no filter
+};
+
 const mapRow = (row) => ({
   id: row.id,
   nombre: row.nombre || '',
   icono: row.icono || '',
+  scope: row.scope || 'campo',
 });
 
 router.get('/activity-types', requireAuth, async (req, res) => {
   const countryCode = resolveRequestCountry(req);
+  const scopeFilter = scopeForRole(req.userRole);
   try {
-    const rows = await db.public.many(
-      'SELECT id, nombre, icono FROM activity_types WHERE country_code = $1 ORDER BY nombre ASC',
-      [countryCode]
-    );
+    const params = [countryCode];
+    let sql = 'SELECT id, nombre, icono, scope FROM activity_types WHERE country_code = $1';
+    if (scopeFilter) {
+      params.push(scopeFilter);
+      sql += ` AND scope = $${params.length}`;
+    }
+    sql += ' ORDER BY nombre ASC';
+    const rows = await db.public.many(sql, params);
     res.json(rows.map(mapRow));
   } catch (error) {
     res.status(500).json({ error: 'No se pudieron listar los tipos de actividad' });
@@ -46,15 +64,16 @@ router.post('/activity-types', requireAuth, requireAdminOrMetrics, async (req, r
   if (!nombre) {
     return res.status(400).json({ error: 'nombre requerido' });
   }
+  const scope = normalizeScope(req.body && req.body.scope);
   try {
     const row = await db.public.one(
-      'INSERT INTO activity_types(nombre, icono, country_code) VALUES($1, $2, $3) RETURNING id, nombre, icono',
-      [nombre, icono, countryCode]
+      'INSERT INTO activity_types(nombre, icono, scope, country_code) VALUES($1, $2, $3, $4) RETURNING id, nombre, icono, scope',
+      [nombre, icono, scope, countryCode]
     );
     res.status(201).json(mapRow(row));
   } catch (error) {
     if (error.code === '23505') {
-      return res.status(400).json({ error: 'Ya existe un tipo con ese nombre' });
+      return res.status(400).json({ error: 'Ya existe un tipo con ese nombre en ese ámbito' });
     }
     res.status(500).json({ error: 'No se pudo crear el tipo de actividad' });
   }
@@ -71,19 +90,21 @@ router.put('/activity-types/:typeId', requireAuth, requireAdminOrMetrics, async 
   if (!Number.isInteger(typeId) || typeId <= 0) {
     return res.status(400).json({ error: 'ID inválido' });
   }
+  const scope = normalizeScope(req.body && req.body.scope);
   try {
     const row = await db.public.one(
       `UPDATE activity_types
           SET nombre = $1,
-              icono = $2
-        WHERE id = $3 AND country_code = $4
-        RETURNING id, nombre, icono`,
-      [nombre, icono, typeId, countryCode]
+              icono = $2,
+              scope = $3
+        WHERE id = $4 AND country_code = $5
+        RETURNING id, nombre, icono, scope`,
+      [nombre, icono, scope, typeId, countryCode]
     );
     res.json(mapRow(row));
   } catch (error) {
     if (error.code === '23505') {
-      return res.status(400).json({ error: 'Ya existe un tipo con ese nombre' });
+      return res.status(400).json({ error: 'Ya existe un tipo con ese nombre en ese ámbito' });
     }
     if (error.message && error.message.includes('No rows')) {
       return res.status(404).json({ error: 'Tipo de actividad no encontrado' });

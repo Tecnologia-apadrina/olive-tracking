@@ -4,6 +4,12 @@ const db = require('../db');
 const { hashPassword } = require('../utils/password');
 const { isValidCountryCode, normalizeCountryCode } = require('../utils/country');
 
+const allowedRoles = ['campo', 'conservera', 'patio', 'molino', 'metricas', 'admin'];
+const normalizeRole = (role) => {
+  const normalized = (role || '').toString().trim().toLowerCase() || 'campo';
+  return allowedRoles.includes(normalized) ? normalized : 'campo';
+};
+
 // Simple helpers
 const requireAuth = (req, res, next) => {
   if (!req.userId) return res.status(401).json({ error: 'No autenticado' });
@@ -30,7 +36,7 @@ router.post('/users', requireAuth, requireAdmin, async (req, res) => {
     const normalizedCountry = normalizeCountryCode(country_code);
     const row = await db.public.one(
       'INSERT INTO users(username, password_hash, role, country_code) VALUES($1, $2, $3, $4) RETURNING id, username, role, country_code',
-      [username, hashPassword(password), role || 'campo', normalizedCountry]
+      [username, hashPassword(password), normalizeRole(role), normalizedCountry]
     );
     res.status(201).json(row);
   } catch (e) {
@@ -60,7 +66,7 @@ router.patch('/users/:id', requireAuth, requireAdmin, async (req, res) => {
     const params = [];
     let idx = 1;
     if (username) { fields.push(`username = $${idx++}`); params.push(username); }
-    if (role) { fields.push(`role = $${idx++}`); params.push(role); }
+    if (role) { fields.push(`role = $${idx++}`); params.push(normalizeRole(role)); }
     if (password) { fields.push(`password_hash = $${idx++}`); params.push(hashPassword(password)); }
     if (country_code !== undefined) {
       if (!isValidCountryCode(country_code)) {

@@ -134,6 +134,11 @@ function normalizeString(value) {
   return String(value).trim();
 }
 
+function normalizeScope(value) {
+  const v = normalizeString(value).toLowerCase();
+  return v === 'conservera' ? 'conservera' : 'campo';
+}
+
 function normalizeCodeReference(value) {
   const base = normalizeString(value);
   if (!base) return '';
@@ -148,6 +153,7 @@ function makeActivityTypeRecord(type) {
     id,
     nombre: normalizeString(type.nombre || type.name || ''),
     icono: normalizeString(type.icono || ''),
+    scope: normalizeScope(type.scope || type.category),
   };
 }
 
@@ -156,6 +162,7 @@ function toUiActivityType(record) {
     id: Number(record.id),
     nombre: normalizeString(record.nombre),
     icono: normalizeString(record.icono),
+    scope: normalizeScope(record.scope),
   };
 }
 
@@ -389,6 +396,7 @@ function toUiActivity(record) {
     activity_type_id: record.activity_type_id,
     activity_type_nombre: record.activity_type_nombre,
     activity_type_icono: record.activity_type_icono,
+    activity_type_scope: normalizeScope(record.activity_type_scope || (record.activity_type && record.activity_type.scope)),
     personas: record.personas,
     notas: record.notas,
     created_at: record.created_at,

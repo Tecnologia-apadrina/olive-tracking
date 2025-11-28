@@ -3,10 +3,17 @@ const router = express.Router();
 const db = require('../db');
 const { resolveRequestCountry } = require('../utils/country');
 
+const scopeForRole = (role) => {
+  if (role === 'conservera') return 'conservera';
+  if (role === 'campo') return 'campo';
+  return null;
+};
+
 router.get('/sync/snapshot', async (req, res) => {
   if (!req.userId) return res.status(401).json({ error: 'No autenticado' });
   try {
     const countryCode = resolveRequestCountry(req);
+    const scope = scopeForRole(req.userRole);
     const [
       parcelas,
       olivos,
@@ -110,7 +117,16 @@ router.get('/sync/snapshot', async (req, res) => {
           ORDER BY name ASC`,
         [countryCode]
       ),
-      db.public.many('SELECT id, nombre, icono FROM activity_types WHERE country_code = $1 ORDER BY nombre ASC', [countryCode]),
+      (() => {
+        const params = [countryCode];
+        let sql = 'SELECT id, nombre, icono, scope FROM activity_types WHERE country_code = $1';
+        if (scope) {
+          params.push(scope);
+          sql += ` AND scope = $${params.length}`;
+        }
+        sql += ' ORDER BY nombre ASC';
+        return db.public.many(sql, params);
+      })(),
       db.public.many(
         `SELECT pa.id,
                 pa.parcela_id,
@@ -126,6 +142,7 @@ router.get('/sync/snapshot', async (req, res) => {
                 pa.activity_type_id,
                 at.nombre AS activity_type_nombre,
                 at.icono AS activity_type_icono,
+                at.scope AS activity_type_scope,
                 pa.personas,
                 pa.notas,
                 pa.created_at,
@@ -138,9 +155,9 @@ router.get('/sync/snapshot', async (req, res) => {
            LEFT JOIN parajes pj ON pj.id = par.paraje_id AND pj.country_code = par.country_code
            JOIN activity_types at ON at.id = pa.activity_type_id AND at.country_code = pa.country_code
            LEFT JOIN users u ON u.id = pa.created_by
-          WHERE pa.country_code = $1
+          WHERE pa.country_code = $1${scope ? ' AND at.scope = $2' : ''}
           ORDER BY pa.created_at DESC, pa.id DESC`,
-        [countryCode]
+        scope ? [countryCode, scope] : [countryCode]
       ),
     ]);
     res.json({
